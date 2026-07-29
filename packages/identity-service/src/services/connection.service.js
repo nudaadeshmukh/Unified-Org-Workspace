@@ -5,11 +5,19 @@ const { AppError } = require('../lib/errors');
 const NOT_FOUND = () => new AppError('Organization not found', 404, 'NOT_FOUND');
 const CONNECTION_NOT_FOUND = () => new AppError('Connection not found', 404, 'NOT_FOUND');
 
-// audit-service doesn't exist until Phase 5 — auditClient.log() is still a
-// throwing stub. A connection mutation that already succeeded must never be
-// undone by an audit call failing, so this swallows and just surfaces a
-// warning; confirm end-to-end once Phase 5 builds the real receiving endpoint
-// (per implementation_guide.md's Phase 5 note).
+// TEMPORARY, not the final design — reconcile explicitly in Phase 5, don't
+// just leave this as-is because it happens to work. Swallowing here is a
+// Phase 2 stopgap forced by audit-service not existing yet (auditClient.log()
+// is still a throwing stub); it is NOT the locked behavior. CLAUDE.md rule #9
+// ("calls auditClient.log(...) before returning success to the caller") and
+// the documented ticket/pr-service trade-off both point toward the audit
+// write being synchronous and mutation-blocking once audit-service is real
+// (a down/slow audit-service should fail the mutation, not silently lose the
+// audit trail — this is an audit-integrity-graded assignment). When Phase 5
+// wires the real endpoint, either switch this to blocking (rethrow instead of
+// swallow) to match ticket/pr-service, or — if graceful degradation is
+// deliberately kept — update CLAUDE.md rule #9 to say so explicitly so all
+// three services are consistent instead of silently divergent.
 async function logAudit(event) {
   try {
     await auditClient.log(event);
@@ -46,13 +54,24 @@ async function requestConnection(orgId, caller, { targetOrgId }) {
   // a partial/filtered unique index (unique only while PENDING/APPROVED),
   // and hand-writing one via raw migration SQL risks `prisma migrate dev`'s
   // drift detection proposing a reset the next time schema.prisma changes.
-  // Enforced here instead. A REVOKED row for this exact directed pair is
-  // fine to coexist with a new request (that's the "brand-new PENDING
-  // request" the spec requires after a revoke); an already-PENDING or
-  // already-APPROVED one for this exact pair is not — that would be two
-  // live connection objects representing the same relationship.
+  // Enforced here instead. A REVOKED row for this exact pair (either
+  // direction) is fine to coexist with a new request (that's the "brand-new
+  // PENDING request" the spec requires after a revoke); an already-PENDING
+  // or already-APPROVED one is not — checked in BOTH directions, not just
+  // this exact (requesterOrgId, targetOrgId) order. A connection is a
+  // relationship between two orgs, not a per-direction thing: if Alpha→Beta
+  // is APPROVED, a Beta→Alpha request must also be blocked, otherwise two
+  // live rows could represent the same org pair with conflicting status,
+  // which would make GET /internal/connections/status ambiguous for
+  // ticket-service/pr-service's sharing checks in Phase 3/4.
   const existingActive = await prisma.orgConnection.findFirst({
-    where: { requesterOrgId: orgId, targetOrgId, status: { in: ['PENDING', 'APPROVED'] } },
+    where: {
+      status: { in: ['PENDING', 'APPROVED'] },
+      OR: [
+        { requesterOrgId: orgId, targetOrgId },
+        { requesterOrgId: targetOrgId, targetOrgId: orgId },
+      ],
+    },
   });
   if (existingActive) {
     throw new AppError(

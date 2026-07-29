@@ -26,6 +26,9 @@ out/
 packages/*/node_modules/.prisma/
 generated/
 
+# ----- Uploaded files (Phase 3 locked storage: local disk, per-service) ----
+uploads/
+
 # ----- Logs --------------------------------------------------------------
 npm-debug.log*
 yarn-debug.log*

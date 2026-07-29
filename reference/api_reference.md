@@ -6,6 +6,8 @@ Exact contract for every endpoint. Match method, path, roles, and response shape
 
 Role shorthand: **OA** = Org Admin, **SA** = Support Agent, **REV** = Reviewer/Approver, **GUEST** = valid share-holder (not a stored role — see CLAUDE.md), **PSA** = Platform Super Admin, **ANY** = any authenticated user regardless of role, **PUBLIC** = no auth required.
 
+**PSA note:** PSA only appears in role columns for identity-service's own org/connection-management routes. Nowhere in ticket-service or pr-service's tables below does PSA appear — that's intentional, not an omission. PSA has no ticket/PR visibility anywhere, in any org. `requireRole()` calls in those two services must pass `{ allowPlatformAdmin: false }` explicitly; see `CLAUDE.md` → Platform Super Admin scope.
+
 ---
 
 ## identity-service (Phase 2)

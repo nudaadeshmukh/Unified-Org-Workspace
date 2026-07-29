@@ -65,6 +65,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 **Scope (see `api_reference.md` → ticket-service):**
 - Ticket CRUD, comments, attachments. **Locked storage mechanism:** files are saved to a per-service `packages/ticket-service/uploads/` directory (gitignored — add `uploads/` to `.gitignore` in this phase), served via `express.static` at `/uploads/:filename`. `Attachment.fileUrl` stores that relative path (e.g. `/uploads/<uuid>-<originalname>`), not an absolute URL. Known limitation to carry into `docs/known-limitations.md` at Phase 9: Railway's container filesystem is ephemeral, so uploaded files won't survive a redeploy — acceptable for this assignment's timeline, not for real production use.
 - `packages/shared/orgScope.js`: real implementation now — this is the actual BOLA defense, used by every route here.
+- **PSA does not bypass anything in this service.** Every `requireRole(...)` call here must pass `{ allowPlatformAdmin: false }` — see `CLAUDE.md` → Platform Super Admin scope. Do not build a separate/local role-gate implementation for this service; the shared `requireRole()` middleware should take the bypass behavior as an explicit parameter so identity-service and ticket-service both use the one implementation correctly, rather than diverging.
 - Feature flags: `GET /orgs/:orgId/feature-flags` (reads seeded rows).
 - Cross-org ticket sharing: `POST/GET/DELETE /tickets/:id/shares` — must call identity-service's `/internal/connections/status` before creating a share.
 - The 5-step cross-org permission check from the master spec (own org → share exists → not revoked → connection still APPROVED → view+comment only) implemented as one reusable function, unit-testable directly (not just through HTTP).
@@ -87,6 +88,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 - Versioning: edits after review starts create a new `PRVersion`, not an in-place update. Diff endpoint using the `diff` npm package.
 - Cross-org PR sharing, same pattern and same connection-check requirement as ticket sharing — reuse the shared connection-check function from Phase 3 rather than rewriting it.
 - Same `orgScope`/share-check discipline as ticket-service — same 5-step check, same function shape (consider whether this logic can literally live in `packages/shared` and be reused by both services rather than duplicated in each).
+- **Same PSA rule as Phase 3: `requireRole(...)` calls here must pass `{ allowPlatformAdmin: false }` too.** PSA has no PR visibility anywhere, same as tickets — this was already resolved in Phase 3, reuse that decision rather than re-deriving it.
 - `auditClient.log(...)` on every mutation — same caveat as Phase 3 if audit-service isn't live yet.
 - `pr-service`'s `seed.ts` per the master spec (2 PRs, 1 reviewer, 1 version, 1 changes-requested review, 1 cross-org share).
 

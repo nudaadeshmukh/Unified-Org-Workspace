@@ -20,6 +20,10 @@ Unified Org Workspace for Froncort.AI — a multi-tenant SaaS combining a Suppor
 10. **Passwords are bcrypt-hashed (cost 10–12), never logged, never included in any API response, ever** — including nested in a `user` object returned from an unrelated endpoint.
 11. **Do not invent new API routes, response shapes, or role names that aren't in `reference/api_reference.md`.** If a phase seems to need one that isn't documented, stop and ask rather than improvising — this project is being graded partly on architecture discipline, and undocumented endpoints break that.
 
+## Platform Super Admin scope (locked)
+
+PSA's access is **organizations, cross-org connections, and global platform settings — nothing else.** PSA does **not** get blanket visibility into ticket or PR data across orgs; that capability was never in the spec and must not exist. `packages/shared/middleware/requireRole.js`'s auto-bypass-for-`isPlatformAdmin` behavior is correct **only** for identity-service's own org-management routes (`GET /orgs/:id`, member CRUD, connections) — it must be an explicit, opt-in parameter at every call site (e.g. `requireRole(['ORG_ADMIN'], { allowPlatformAdmin: false })`), not a hardcoded default, so ticket-service and pr-service can and must set it to `false`. If a route's allowed-roles table in `api_reference.md` doesn't list PSA, PSA does not bypass there — no exceptions.
+
 ## Architecture
 
 True microservices, npm-workspaces monorepo, one Postgres instance (4 schemas: `identity`, `tickets`, `prs`, `audit`), one Redis instance.
