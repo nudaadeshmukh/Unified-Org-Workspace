@@ -231,6 +231,33 @@ User caught one real design flaw and one deferred-fix-that-shouldn't-have-been-d
 
 ---
 
+## Phase 3 patch, round 2 — PSA restored on connection endpoints (2026-07-29)
+
+The requireRole fail-safe-default fix (previous patch) made a real, previously-invisible spec gap visible: `POST /orgs/:id/connections` and `PATCH /connections/:id` were built in Phase 2 as PSA-excluded, but `api_reference.md`'s connections table actually lists PSA for both, matching the assignment's own description of PSA's scope ("manages... cross-org connections") and the pattern already used for member-management. This was never a real bug in Phase 2 — the old `requireRole()` bypassed PSA unconditionally regardless of the table, so the exclusion was already broken (in the permissive direction) from day one; the fail-safe fix just made the gap between "what the code does" and "what the table says" visible for the first time, in the strict direction. Fixed per the user's 3-part instruction:
+
+**1. Router-level fix.** `packages/identity-service/src/routes/orgs.routes.js`'s `POST /:id/connections` and `packages/identity-service/src/routes/connections.routes.js`'s `PATCH /:id` both now pass `requireRole(['ORG_ADMIN'], { allowPlatformAdmin: true })`.
+
+**2. Service-level fix — this was the real substance of the fix, not just the router flag.** Flipping the router gate alone would have been insufficient: `connection.service.js`'s `requestConnection` used `assertOrgAdminStrict` (caller must literally be `ORG_ADMIN` of the exact `orgId` in the URL — no PSA path at all), and `respondToConnection`'s `isRequesterOrgAdmin`/`isTargetOrgAdmin` checks require `caller.activeOrgId` to equal one of the connection's two orgs — both would still 404/403 a PSA acting on two orgs they don't belong to (PSA typically has `activeOrgId: null`, no `OrgMembership` exists for PSAs by design). Fixed by: replacing `assertOrgAdminStrict` with the existing `assertOrgAdminOrPSA` (already used by `listConnections`, now shared by `requestConnection` too — they were doing the same check except for the PSA line, no reason to keep two functions); adding an explicit `isPSA` bypass in `respondToConnection`, checked alongside (not instead of) the existing `isRequesterOrgAdmin`/`isTargetOrgAdmin` logic, since PSA's authority can't be expressed as "is the target/either org's admin" the way a real member's can — it's a genuinely separate bypass of the whole membership question, same shape as `org.service.js`'s `GET /orgs/:id`.
+
+**3. Explicit regression test, shown as actual output per the request (not "no regressions" asserted):**
+- Confirmed PSA had zero `OrgMembership` rows (`GET /auth/me` → `"memberships":[]`) and confirmed no connection existed between Beta and Gamma beforehand (`{"approved":false,"connectionId":null}`).
+- PSA `POST /orgs/{betaId}/connections` targeting Gamma → `201`, new `PENDING` row, `requesterOrgId` = Beta (PSA acting on an org it doesn't belong to).
+- PSA `PATCH /connections/{id}` `{"status":"APPROVED"}` → `200`, confirmed via `/internal/connections/status` → `{"approved":true,...}`.
+- PSA `PATCH /connections/{id}` `{"status":"REVOKED"}` → `200`, confirmed via the same internal check → back to `{"approved":false,"connectionId":null}`.
+- OA (Alpha admin) unchanged: `POST /orgs/:id/connections` for their own org still reaches the same business logic as before (correctly hit the existing duplicate-active-connection guard, `409`, since Alpha↔Gamma already had a live connection from earlier patch-round testing); separately revoked and re-approved an existing Alpha↔Gamma connection as OA to show the full lifecycle still works unchanged (`200` both times).
+- SA (`agent@alpha.test`) and REV (`reviewer@alpha.test`) both still `403 FORBIDDEN` attempting `POST /orgs/:id/connections` for their own org — role gate unchanged for non-OA, non-PSA roles.
+
+**Files modified:**
+- `packages/identity-service/src/services/connection.service.js` — `assertOrgAdminStrict` removed, `requestConnection` now uses `assertOrgAdminOrPSA`; `respondToConnection` gained an explicit `isPSA` bypass checked alongside the existing org-admin conditions.
+- `packages/identity-service/src/routes/orgs.routes.js`, `packages/identity-service/src/routes/connections.routes.js` — both routes' `requireRole` calls flipped to `{ allowPlatformAdmin: true }`, comments rewritten to explain the router+service two-layer requirement.
+
+**Remaining work:** none — Phase 4 is still next.
+
+**Known issues / TODOs:**
+- The Phase 3 patch round 1 note about `POST /orgs/:id/connections`'s PSA behavior change (403-vs-404) is superseded by this round — PSA no longer hits that role gate at all on this route, so the 403-vs-404 question is moot there now. Not editing that entry, per this file's own rule; noting the supersession here.
+
+---
+
 <!--
 Copy the block below for each subsequent phase as it completes. Keep phases in order, oldest first.
 

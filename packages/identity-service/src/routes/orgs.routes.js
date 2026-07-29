@@ -70,15 +70,16 @@ router.delete(
   }
 );
 
-// api_reference.md excludes PSA from this route entirely — requireRole()'s
-// PSA bypass is explicit opt-in (CLAUDE.md's "Platform Super Admin scope"),
-// so allowPlatformAdmin: false here. The own-org-admin-only 404 check still
-// happens inside connectionService (role is right by the time it gets
-// there; org may not be).
+// api_reference.md's table lists PSA here too — matches PSA's documented
+// scope ("manages... cross-org connections") and the same pattern as
+// member-management above. connectionService.requestConnection has its own
+// explicit PSA bypass for the org-membership check (see
+// assertOrgAdminOrPSA there); this router-level gate and that service-level
+// one both need to agree, not just one of them.
 router.post(
   '/:id/connections',
   authenticate,
-  requireRole(['ORG_ADMIN'], { allowPlatformAdmin: false }),
+  requireRole(['ORG_ADMIN'], { allowPlatformAdmin: true }),
   async (req, res, next) => {
     try {
       const body = createConnectionSchema.parse(req.body);
