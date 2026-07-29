@@ -1,0 +1,9 @@
+{
+  "name": "@froncort/ui",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "peerDependencies": {
+    "react": "^18.3.1 || ^19.0.0"
+  }
+}

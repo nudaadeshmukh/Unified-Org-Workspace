@@ -1,0 +1,33 @@
+{
+  "name": "@froncort/identity-service",
+  "version": "1.0.0",
+  "private": true,
+  "_prismaVersionPin": "DO NOT bump prisma/@prisma/client past 6.x without redesigning PrismaClient construction across all 4 services. Prisma 7 removed classic datasource{url=env(...)} support for Migrate, requiring prisma.config.ts + a driver adapter (@prisma/adapter-pg) instead. CLAUDE.md's schema-scoped-URL design (and audit-service's owner/audit_writer dual-connection split) depends on the classic single-URL model. See docs/project-progress.md Phase 1 entry for the full story.",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "prisma:generate": "dotenv -e ../../.env -- prisma generate --schema=prisma/schema.prisma",
+    "prisma:migrate": "dotenv -e ../../.env -- prisma migrate dev --schema=prisma/schema.prisma --name init"
+  },
+  "dependencies": {
+    "@froncort/shared": "*",
+    "@prisma/client": "^6.19.3",
+    "bcrypt": "^5.1.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-rate-limit": "^8.6.1",
+    "helmet": "^7.2.0",
+    "morgan": "^1.10.0",
+    "redis": "^6.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^7.4.2",
+    "prisma": "^6.19.3"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  }
+}

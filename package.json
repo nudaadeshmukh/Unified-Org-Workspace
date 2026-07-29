@@ -1,25 +1,38 @@
 {
-  "devDependencies": {
-    "prisma": "^7.9.1"
-  },
-  "dependencies": {
-    "@prisma/client": "^7.9.1"
-  },
-  "name": "froncort",
+  "name": "froncort-workspace",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "type": "commonjs",
+  "description": "Froncort Unified Org Workspace — Support Hub + Review & Audit Console monorepo",
+  "workspaces": [
+    "packages/*",
+    "frontend/packages/*",
+    "frontend/apps/*"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "concurrently -n identity,ticket,pr,audit,support-hub,review-console -c blue,green,yellow,magenta,cyan,red \"npm run dev -w packages/identity-service\" \"npm run dev -w packages/ticket-service\" \"npm run dev -w packages/pr-service\" \"npm run dev -w packages/audit-service\" \"npm run dev -w frontend/apps/support-hub\" \"npm run dev -w frontend/apps/review-console\"",
+    "prisma:generate": "npm run prisma:generate -w packages/identity-service && npm run prisma:generate -w packages/ticket-service && npm run prisma:generate -w packages/pr-service && npm run prisma:generate -w packages/audit-service",
+    "prisma:migrate": "npm run prisma:migrate -w packages/identity-service && npm run prisma:migrate -w packages/ticket-service && npm run prisma:migrate -w packages/pr-service && npm run prisma:migrate -w packages/audit-service"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nudaadeshmukh/Unified-Org-Workspace.git"
   },
-  "keywords": [],
-  "type": "commonjs",
   "bugs": {
     "url": "https://github.com/nudaadeshmukh/Unified-Org-Workspace/issues"
   },
-  "homepage": "https://github.com/nudaadeshmukh/Unified-Org-Workspace#readme"
+  "homepage": "https://github.com/nudaadeshmukh/Unified-Org-Workspace#readme",
+  "allowScripts": {
+    "bcrypt@5.1.1": true,
+    "sharp@0.34.5": true,
+    "@prisma/client@6.19.3": true,
+    "prisma@6.19.3": true,
+    "@prisma/engines@6.19.3": true
+  }
 }

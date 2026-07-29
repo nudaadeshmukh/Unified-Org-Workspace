@@ -37,19 +37,20 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 
 **Scope (see `api_reference.md` → identity-service for exact contracts):**
 - `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/switch-org`, `/auth/session` (logout), `/auth/me`.
-- RS256 keypair generation via `scripts/generate-jwt-keys.sh`; identity-service signs, exposes only the public key for other services (read from a shared file path or an endpoint — your call, document whichever in `docs/known-limitations.md`).
+- RS256 keypair generation via `scripts/generate-jwt-keys.sh`; identity-service signs. **Distribution is locked: both keys are injected as env vars (`JWT_PRIVATE_KEY` for identity-service only, `JWT_PUBLIC_KEY` for all 4 services), base64-encoded PEM strings — not a shared file path and not an internal endpoint.** This was previously left open in this guide; it's now decided because a file path breaks once services are on separate Railway hosts with no shared filesystem.
 - Refresh token: opaque string in Redis (`refresh:<token> → userId`), `httpOnly`/`Secure` cookie, rotated on every `/auth/refresh` call, with reuse-of-rotated-token detection revoking the whole session (delete all Redis state for that user's session).
 - `packages/shared/jwt.js`: real `sign()` (identity-service only) and `verify()` (all services) implementations now.
 - `packages/shared/middleware/authenticate.js`: real implementation — verifies JWT, attaches `req.user = {id, activeOrgId, orgRole, isPlatformAdmin}`.
 - `packages/shared/middleware/requireRole.js`: real implementation.
 - Org management endpoints: `/orgs/:id`, `/orgs/:id/members` (POST/PATCH/DELETE).
-- Cross-org connection endpoints: `/orgs/:id/connections` (POST/GET), `/connections/:id` (PATCH) — full state machine (PENDING → APPROVED/REVOKED, no direct re-approval after revoke).
+- Cross-org connection endpoints: `/orgs/:id/connections` (POST/GET), `/connections/:id` (PATCH) — full state machine (PENDING → APPROVED/REVOKED, no direct re-approval after revoke). **`auditClient.log(...)` calls required on all three transitions** (`CONNECTION_REQUESTED`, `CONNECTION_APPROVED`, `CONNECTION_REVOKED`) — this was missing from an earlier draft of this phase; audit-service doesn't exist yet at this point in the build, so stub the HTTP call gracefully (same pattern Phase 3/4 use), and confirm it actually works end-to-end once Phase 5 builds the real receiving endpoint.
+- **Verify explicitly:** can two orgs re-establish a connection in the same direction after a prior connection between them was revoked? The unique constraint is on the `(requesterOrgId, partnerOrgId)` pair — if `connection.service.js` attempts a plain insert for a repeat same-direction request, it will collide with the existing (revoked) row. Either the service must find-and-reset an existing row back to `PENDING` when re-requested in the same direction, or the unique constraint needs to become a partial index (unique only where `status IN ('PENDING','APPROVED')`) so history can have multiple rows for the same pair over time. Resolve and document whichever approach is taken before Phase 3.
 - Internal endpoint: `/internal/connections/status` for other services to check.
 - `packages/shared/middleware/internalAuth.js`: real implementation, checks `X-Internal-Api-Key` header.
-- Rate limiting on `/auth/login` (express-rate-limit).
+- Rate limiting on `/auth/login` (express-rate-limit). **Locked threshold: 5 attempts per 15 minutes, keyed by IP + email combined** (not IP alone, so one attacker can't lock out a legitimate user's email by spraying from many IPs, and one shared-IP office can't accidentally lock everyone out). Return 429 with a plain `{error: {message, code: 'RATE_LIMITED'}}` body, no retry-after leakage of internal state.
 - bcrypt password hashing (cost 10–12).
 - zod validation on every route body in this service.
-- `identity-service`'s `seed.ts`: 2 orgs, users across all roles, 1 approved connection — per the master spec's seed plan.
+- `identity-service`'s `seed.ts`: 2 orgs, users across all roles, 1 approved connection — per the master spec's seed plan. **Locked: Platform Super Admin is seed-only.** There is no in-app registration, promotion, or invite path to `isPlatformAdmin: true` — `/auth/register` always produces a regular `ORG_ADMIN` of a new org, never a PSA. The one PSA account exists solely because the seed script sets the flag directly. Do not add a promotion endpoint even if it seems convenient for testing.
 
 **Non-goals:** no ticket/PR logic. No frontend wiring beyond what's needed to manually test via API client — real login/org-switcher UI comes in Phase 7/8.
 
@@ -62,7 +63,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 **Goal:** full ticket-service functionality, independently testable, correctly enforcing org isolation and cross-org sharing against identity-service.
 
 **Scope (see `api_reference.md` → ticket-service):**
-- Ticket CRUD, comments, attachments (store file + metadata; local disk or S3-compatible bucket is fine).
+- Ticket CRUD, comments, attachments. **Locked storage mechanism:** files are saved to a per-service `packages/ticket-service/uploads/` directory (gitignored — add `uploads/` to `.gitignore` in this phase), served via `express.static` at `/uploads/:filename`. `Attachment.fileUrl` stores that relative path (e.g. `/uploads/<uuid>-<originalname>`), not an absolute URL. Known limitation to carry into `docs/known-limitations.md` at Phase 9: Railway's container filesystem is ephemeral, so uploaded files won't survive a redeploy — acceptable for this assignment's timeline, not for real production use.
 - `packages/shared/orgScope.js`: real implementation now — this is the actual BOLA defense, used by every route here.
 - Feature flags: `GET /orgs/:orgId/feature-flags` (reads seeded rows).
 - Cross-org ticket sharing: `POST/GET/DELETE /tickets/:id/shares` — must call identity-service's `/internal/connections/status` before creating a share.
@@ -100,7 +101,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 **Goal:** the append-only audit trail is real (DB-enforced), the unified viewer works across both dashboards' data, and the AI digest job runs on a schedule without ever seeing unscoped data.
 
 **Scope (see `api_reference.md` → audit-service):**
-- `POST /internal/audit-events` — the write path ticket-service and pr-service were already calling (or stubbing) since Phase 3/4. **Go back and confirm those calls now actually work end-to-end** — this is exactly the kind of gap Phase 3/4 were told to flag, not hide.
+- `POST /internal/audit-events` — the write path ticket-service and pr-service were already calling (or stubbing) since Phase 3/4, **and identity-service's connection-lifecycle calls (`CONNECTION_REQUESTED`/`APPROVED`/`REVOKED`) added in Phase 2.** **Go back and confirm all three services' calls now actually work end-to-end** — this is exactly the kind of gap earlier phases were told to flag, not hide.
 - Append-only enforcement: run the `audit_writer` role SQL (INSERT+SELECT only, UPDATE/DELETE revoked) against the audit schema. audit-service's runtime `.env` connects as `audit_writer`; a separate `.env` var for migrations uses the superuser/owner connection.
 - `GET /audit-log` with all filters (`userId, from, to, action, format=csv`) — `orgId` always forced server-side to caller's own org, never trusted from a query param.
 - Notifications: `Notification` model (add to audit schema's `schema.prisma` now if not already present from Phase 1), `GET /notifications`, `PATCH /notifications/:id/read`.
@@ -175,6 +176,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 
 **Scope:**
 - Re-run/verify seed scripts produce the exact required demo scenario (2 orgs, 1 approved connection, sample tickets/PRs) on a clean database, with credentials printed clearly.
+- **Custom domain required before deployment, not optional:** session sync depends on both dashboards sharing one parent domain for the refresh cookie. Default `*.vercel.app` / `*.up.railway.app` subdomains belong to different root domains and cannot share a cookie — you need a real domain you control DNS for (e.g. `support.yourapp.com` and `review.yourapp.com`, or path-based routing under one host). Secure this domain before starting this phase, not during it, since acquiring/propagating DNS can take longer than the rest of the deploy.
 - Deploy: Railway for the 4 backend services + Postgres + Redis; Vercel (or Railway) for both Next.js apps, deployed independently. Update CORS allowlist and cookie domain from `localhost` to the real parent domain.
 - Run `prisma migrate deploy` + seed against the production database once.
 - `/docs`: architecture diagram, `erd.mermaid`, `setup-guide.md`, `known-limitations.md` (consolidate every deferred item from every phase above into one place), root `README.md`, and the agentic-tooling note.
