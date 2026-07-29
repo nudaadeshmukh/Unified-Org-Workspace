@@ -1,0 +1,13 @@
+# Redis only — Postgres is assumed already running locally (localhost:5432).
+# See CLAUDE.md → Local Development Environment. Do not add a Postgres service here.
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: froncort-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

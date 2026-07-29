@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma-client"
+}
+
+// Migrations run as the owner role via AUDIT_DATABASE_URL. The live service
+// connects at runtime as the restricted audit_writer role (INSERT+SELECT only)
+// via AUDIT_RUNTIME_DATABASE_URL instead — see CLAUDE.md rule #4. The
+// audit_writer GRANT/REVOKE SQL itself is applied in Phase 5, not here.
+datasource db {
+  provider = "postgresql"
+  url      = env("AUDIT_DATABASE_URL")
+}
+
+enum AuditAction {
+  TICKET_CREATED
+  TICKET_UPDATED
+  TICKET_DELETED
+  TICKET_SHARED
+  TICKET_SHARE_REVOKED
+  COMMENT_ADDED
+  ATTACHMENT_ADDED
+  PR_CREATED
+  PR_STATUS_CHANGED
+  PR_APPROVED
+  PR_CHANGES_REQUESTED
+  PR_MERGED
+  PR_SHARED
+  PR_SHARE_REVOKED
+  CONNECTION_REQUESTED
+  CONNECTION_APPROVED
+  CONNECTION_REVOKED
+}
+
+enum NotificationType {
+  AI_DIGEST
+  SYSTEM
+}
+
+// Append-only at the DB permission level (Phase 5), not just by convention.
+model AuditLog {
+  id         String      @id @default(uuid())
+  orgId      String
+  actorId    String
+  action     AuditAction
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+
+  @@index([orgId])
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  orgId     String
+  type      NotificationType @default(SYSTEM)
+  title     String
+  body      String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId])
+}

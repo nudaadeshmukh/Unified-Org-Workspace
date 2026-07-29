@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("IDENTITY_DATABASE_URL")
+}
+
+enum OrgRole {
+  ORG_ADMIN
+  SUPPORT_AGENT
+  REVIEWER
+}
+
+enum ConnectionStatus {
+  PENDING
+  APPROVED
+  REVOKED
+}
+
+// Platform Super Admin is carried on User.isPlatformAdmin, not as an OrgRole —
+// it's platform-wide, not scoped to a single org. Seed-only; no promotion endpoint.
+model User {
+  id              String   @id @default(uuid())
+  email           String   @unique
+  passwordHash    String
+  name            String
+  isPlatformAdmin Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  memberships OrgMembership[]
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships            OrgMembership[]
+  connectionsAsRequester OrgConnection[] @relation("RequesterOrg")
+  connectionsAsTarget    OrgConnection[] @relation("TargetOrg")
+}
+
+model OrgMembership {
+  id        String   @id @default(uuid())
+  userId    String
+  orgId     String
+  role      OrgRole
+  createdAt DateTime @default(now())
+
+  user User         @relation(fields: [userId], references: [id])
+  org  Organization @relation(fields: [orgId], references: [id])
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+  @@index([userId])
+}
+
+// PENDING -> APPROVED/REVOKED only. Re-approval after revoke requires a brand
+// new PENDING request — never flip a REVOKED row back to APPROVED in place.
+model OrgConnection {
+  id             String           @id @default(uuid())
+  requesterOrgId String
+  targetOrgId    String
+  status         ConnectionStatus @default(PENDING)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  requesterOrg Organization @relation("RequesterOrg", fields: [requesterOrgId], references: [id])
+  targetOrg    Organization @relation("TargetOrg", fields: [targetOrgId], references: [id])
+
+  @@index([requesterOrgId])
+  @@index([targetOrgId])
+}

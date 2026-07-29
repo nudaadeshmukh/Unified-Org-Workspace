@@ -1,0 +1,100 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PRS_DATABASE_URL")
+}
+
+// No cross-schema FKs to identity models — see ticket-service's schema for why.
+
+enum PRStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  MERGED
+}
+
+enum ReviewStatus {
+  APPROVED
+  CHANGES_REQUESTED
+}
+
+model PullRequest {
+  id                String   @id @default(uuid())
+  orgId             String
+  title             String
+  description       String
+  status            PRStatus @default(DRAFT)
+  authorId          String
+  requiredApprovals Int      @default(1)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  versions  PRVersion[]
+  reviewers PRReviewer[]
+  reviews   PRReview[]
+  shares    PRShare[]
+
+  @@index([orgId])
+}
+
+// Created on every edit once review has started (IN_REVIEW or later) instead
+// of updating PullRequest in place — DRAFT edits update in place.
+model PRVersion {
+  id            String   @id @default(uuid())
+  prId          String
+  versionNumber Int
+  title         String
+  description   String
+  createdAt     DateTime @default(now())
+
+  pr PullRequest @relation(fields: [prId], references: [id])
+
+  @@index([prId])
+}
+
+model PRReviewer {
+  id        String   @id @default(uuid())
+  prId      String
+  userId    String
+  createdAt DateTime @default(now())
+
+  pr PullRequest @relation(fields: [prId], references: [id])
+
+  @@unique([prId, userId])
+  @@index([prId])
+}
+
+// Any CHANGES_REQUESTED sets PR status back to IN_REVIEW regardless of
+// approval count; N distinct APPROVED reviewers >= requiredApprovals -> APPROVED.
+model PRReview {
+  id         String       @id @default(uuid())
+  prId       String
+  reviewerId String
+  status     ReviewStatus
+  comment    String?
+  createdAt  DateTime     @default(now())
+
+  pr PullRequest @relation(fields: [prId], references: [id])
+
+  @@index([prId])
+}
+
+// revokedAt set (soft-revoke), never hard-deleted — same pattern as TicketShare.
+model PRShare {
+  id           String    @id @default(uuid())
+  prId         String
+  partnerOrgId String
+  sharedBy     String
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+
+  pr PullRequest @relation(fields: [prId], references: [id])
+
+  @@index([prId])
+  @@index([partnerOrgId])
+}

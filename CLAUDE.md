@@ -8,12 +8,12 @@ Unified Org Workspace for Froncort.AI — a multi-tenant SaaS combining a Suppor
 
 ## Non-negotiable rules — never violate these, even if a phase prompt doesn't repeat them
 
-1. **Every database query that touches tenant data must be scoped by `orgId` derived from the verified JWT (`req.user.active_org_id`) — never from a URL param, query string, or request body.** This is the single most important rule in this codebase. If you're writing a query against `Ticket`, `PullRequest`, `Comment`, `Attachment`, or any table with an `orgId`/`ticketId`/`prId` column, the org check comes first, unconditionally.
+1. **Every database query that touches tenant data must be scoped by `orgId` derived from the verified JWT (`req.user.activeOrgId`) — never from a URL param, query string, or request body.** This is the single most important rule in this codebase. If you're writing a query against `Ticket`, `PullRequest`, `Comment`, `Attachment`, or any table with an `orgId`/`ticketId`/`prId` column, the org check comes first, unconditionally. Field name is camelCase, matching `api_reference.md` and every other field on `req.user` (`id`, `activeOrgId`, `orgRole`, `isPlatformAdmin`) — the property that matters is where the value comes from, not the exact casing, but camelCase is now the locked convention throughout.
 2. **Resource-not-found and resource-not-yours-to-see both return 404, never 403.** Don't reveal that a resource exists to a caller who has no relationship to it.
 3. **Cross-org access always goes through the share-check chain, in order:** owns it directly → OR has a non-revoked share row for this exact resource ID → AND the underlying `OrgConnection` is still `APPROVED`. All four conditions matter; a share row alone is not sufficient if the connection was later revoked.
 4. **The audit log is append-only at the database permission level**, not just by convention in application code. The runtime connection for audit-service uses the restricted `audit_writer` role (INSERT+SELECT only). Never add UPDATE/DELETE capability to this table or role, even for "cleanup" or "fixing a typo" reasons.
 5. **Never put a JWT or refresh token in localStorage or sessionStorage.** Access tokens live in memory (React state/context) on the frontend. Refresh tokens live server-side in Redis, referenced only by an `httpOnly`, `Secure` cookie.
-6. **Access tokens are signed with RS256.** Only identity-service ever touches the private key. ticket-service, pr-service, and audit-service only ever verify using the public key — never call identity-service synchronously just to check a token.
+6. **Access tokens are signed with RS256.** Only identity-service ever touches the private key. ticket-service, pr-service, and audit-service only ever verify using the public key — never call identity-service synchronously just to check a token. **Locked distribution mechanism: both keys are injected as env vars (`JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY` — base64-encoded PEM), not read from a shared file path.** Production deploys each service to a separate Railway host with no shared filesystem, so a file path would break there even though it works locally — decide this once, now, rather than rewriting `jwt.js` at Phase 9.
 7. **Service-to-service calls use the shared internal API key header** (`packages/shared/middleware/internalAuth.js`), never the end-user's JWT forwarded onward.
 8. **No route handler talks to Prisma directly.** Route → business logic function → Prisma client. This separation is graded; don't collapse it for speed.
 9. **Every mutation that's a "reportable action" per the spec calls `auditClient.log(...)` before returning success to the caller.** If you add a new mutation and you're unsure whether it needs an audit entry, check `api_reference.md`'s audit-actions list before deciding it doesn't.
@@ -42,6 +42,19 @@ froncort-workspace/
 ```
 
 Within every service: `src/routes/` (HTTP + zod validation only) → `src/services/` or `src/lib/` (business logic) → Prisma client (data access). Same pattern in all 4 services, no exceptions.
+
+## Ports (locked)
+
+| Service/app | Port |
+|---|---|
+| identity-service | 4001 |
+| ticket-service | 4002 |
+| pr-service | 4003 |
+| audit-service | 4004 |
+| frontend: support-hub | 3000 |
+| frontend: review-console | 3001 |
+
+These match `.env.example`'s `CORS_ALLOWED_ORIGINS` default (`http://localhost:3000,http://localhost:3001`) — if either frontend app's port changes, update both places together.
 
 ## Tech stack
 
