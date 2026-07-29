@@ -1,0 +1,48 @@
+# ----- Secrets — never commit these ----------------------------------------
+.env
+.env.local
+.env.*.local
+packages/*/.env
+frontend/apps/*/.env.local
+keys/
+*.pem
+
+# ----- Dependencies ----------------------------------------------------
+node_modules/
+packages/*/node_modules/
+frontend/**/node_modules/
+.pnpm-store/
+
+# ----- Build output -------------------------------------------------------
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# ----- Prisma ---------------------------------------------------------
+# Keep schema.prisma and migrations/ (they're the deliverable) — ignore only
+# the generated client output if you configure a custom output path.
+packages/*/node_modules/.prisma/
+generated/
+
+# ----- Logs --------------------------------------------------------------
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# ----- Test / coverage ------------------------------------------------
+coverage/
+.nyc_output/
+
+# ----- OS / editor cruft ------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ----- Misc --------------------------------------------------------------
+.turbo/
+.vercel/
