@@ -623,6 +623,39 @@ Three things the user asked to confirm before Phase 7 code started:
 
 ---
 
+## Phase 7 patch — `GET /orgs/:id/members`, real name resolution and assignee picker (2026-07-31)
+
+Closes both name-resolution gaps flagged at the end of Phase 7, per the user's directive to add the endpoint (now locked into `api_reference.md`) and retrofit the frontend, rather than leaving the free-text-UUID workaround as permanent.
+
+**1. New endpoint — `packages/identity-service/src/services/org.service.js`'s `listMembers(orgId, caller)`** (gated by the existing `assertOrgAdminOrPSA`, identical pattern to `addMember`/`updateMemberRole`/`removeMember`) and **`GET /orgs/:id/members`** in `orgs.routes.js` (`requireRole(['ORG_ADMIN'], { allowPlatformAdmin: true })`, same as the other member routes). Returns `{ data: [{userId, email, name, role}] }` — deliberately the member-facing shape (no `passwordHash`, no `isPlatformAdmin`), not the full `User` row, since any OA of the org can call this, not just PSA/internal callers. Verified via curl against the seeded Alpha org: correctly returns all 4 members including the stray `reviewer@beta.test` cross-org membership noted in earlier phases' entries.
+
+**2. Frontend retrofit:**
+- `frontend/packages/ui/auth/useOrgMembers.js` (new) — fetches `GET /orgs/:id/members` for the caller's `activeOrgId`, but only when `orgRole === 'ORG_ADMIN'` (matches the endpoint's own gate — a SUPPORT_AGENT/REVIEWER caller would just get a 403, so the hook short-circuits to an empty list instead of firing a doomed request). Returns `{ members, byId, loading }` — `byId` is a `userId -> {name, email, role}` map for O(1) lookups.
+- `CommentThread.jsx` — `authorLabel()` now checks `memberNames?.[authorId]?.name` before falling back to `Member <uuid-prefix>`; still shows "You" for the caller's own comments first. `memberNames` is an optional prop (empty object when the caller isn't OA, or hasn't loaded yet) — the truncated-UUID fallback still fires correctly in both those cases, not just when the name is genuinely unresolvable.
+- `dashboard/page.js` (ticket create form) and `dashboard/tickets/[id]/page.js` (assignedTo field, both the editable control and the read-only fallback shown to REV/guest viewers) — `assignedTo` is now a real `<Select>` of `{name} ({role})` options when `members.length > 0` (i.e., caller is OA), falling back to the original free-text UUID `<Input>` otherwise (i.e., SUPPORT_AGENT creating/editing a ticket — SA can create tickets per `api_reference.md` but has no access to the members endpoint, so a dropdown isn't possible for that role without violating the endpoint's own locked access rule).
+- Ticket detail's `memberNames` map is also passed into `CommentThread`, so an OA viewing a ticket sees real names on every same-org comment, not just their own.
+
+**Verification, live in Chrome + curl, not just code-reviewed:**
+- Assignee dropdown: viewing the seeded "Feature request: dark mode" ticket as `admin@alpha.test` (OA) now shows "Aaron Agent (SUPPORT_AGENT)" in the `Assigned to` select instead of the ticket's raw `assignedTo` UUID.
+- Comment name resolution: posted a comment directly via curl as `agent@alpha.test` (`POST /tickets/:id/comments`, authenticated as Aaron, not through the UI) to prove the resolution isn't just echoing back the poster's own client-side name — reloaded the ticket detail page as `admin@alpha.test` and the comment correctly rendered under "Aaron Agent", not a truncated UUID and not "You". Test comment deleted afterward via direct Prisma access (`packages/ticket-service/src/generated/prisma-client`) to leave the seed data clean.
+- Full regression: `npm test` re-run after all changes — **5/5 suites, 18/18 tests passing**, no behavior change to any existing endpoint.
+- **Bug caught and fixed mid-verification, unrelated to the members endpoint itself:** ran `npm run build -w frontend/apps/support-hub` right before the Chrome check (habit from Phase 7's own verification step) while the dev server for the same app was still running — Next.js's dev and prod builds both write to the same `.next/` directory, and running `next build` while `next dev` has it open corrupted the dev server's compiled assets (page rendered as bare unstyled HTML, e.g. a "1 Issue" extension badge visible with no Tailwind CSS loaded at all). Fixed by killing the dev process, deleting `.next/`, and restarting clean. **Lesson for future phases: never run `next build` against an app whose `next dev` is concurrently running** — verify production builds only after stopping (or in a way that doesn't share `.next/` with) the dev server, or run the build check first, before starting/while the dev server is down.
+
+**Files modified:**
+- `packages/identity-service/src/services/org.service.js` (`listMembers` added, exported), `packages/identity-service/src/routes/orgs.routes.js` (`GET /:id/members` route added).
+- `frontend/packages/ui/auth/useOrgMembers.js` (new), `frontend/packages/ui/index.js` (exports it), `frontend/packages/ui/CommentThread.jsx` (accepts `memberNames`).
+- `frontend/apps/support-hub/app/dashboard/page.js`, `frontend/apps/support-hub/app/dashboard/tickets/[id]/page.js` (both retrofitted to use `useOrgMembers`).
+- `reference/api_reference.md` — `GET /orgs/:id/members` documented (done by the user, ahead of this patch, per the instruction that it was "now documented").
+- Dev DB: one test comment created via curl then deleted via direct Prisma access — net no change.
+
+**Remaining work:** Phase 8 (Review Console) is next, using this same endpoint from the start for the reviewer-assignment picker per the updated Phase 8 scope in `implementation_guide.md`, rather than building a free-text version first and retrofitting later the way Support Hub's `assignedTo` field did.
+
+**Known issues / TODOs:**
+- **Accepted, documented scope boundary — not a bug:** `useOrgMembers` only ever resolves names within the viewer's own active org, and only when the viewer is OA (matching the endpoint's own `OA-or-PSA` gate). A REVIEWER or SUPPORT_AGENT viewing a ticket's comments still sees the truncated-UUID fallback for other members' names — the endpoint's role restriction is exactly what the user specified ("matching the existing member-management pattern"), not an oversight. Cross-org guest name resolution (a partner org's commenter on a shared ticket) remains entirely out of scope, as directed — the truncated-UUID fallback stays permanent there.
+- The `next build`-vs-`next dev` `.next/` collision above cost real debugging time; worth a one-line note in `CLAUDE.md`'s "Reliability Rules" or a project-local dev note at Phase 9 if this trips up again.
+
+---
+
 <!--
 Copy the block below for each subsequent phase as it completes. Keep phases in order, oldest first.
 

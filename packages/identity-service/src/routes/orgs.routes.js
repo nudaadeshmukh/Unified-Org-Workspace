@@ -26,6 +26,20 @@ router.get('/:id', authenticate, async (req, res, next) => {
   }
 });
 
+router.get(
+  '/:id/members',
+  authenticate,
+  requireRole(['ORG_ADMIN'], { allowPlatformAdmin: true }),
+  async (req, res, next) => {
+    try {
+      const members = await orgService.listMembers(req.params.id, req.user);
+      res.json({ data: members });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 router.post(
   '/:id/members',
   authenticate,

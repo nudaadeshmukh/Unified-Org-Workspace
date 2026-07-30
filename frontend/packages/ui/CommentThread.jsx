@@ -8,19 +8,22 @@ import Button from './Button';
 /**
  * Comment.authorId is a bare UUID — ticket-service has no cross-schema join
  * to identity-service's User table (CLAUDE.md: services only know their own
- * schema), and no endpoint exists anywhere in api_reference.md to resolve a
- * userId to a display name for a caller who isn't that org's admin. Rather
- * than invent one (CLAUDE.md rule #11), this shows "You" for the current
- * user's own comments and a short id fragment otherwise — flagged in
- * docs/project-progress.md as a real frontend/backend contract gap, not
+ * schema). `memberNames` (from useOrgMembers' `byId`, added after Phase 7)
+ * resolves same-org authors to a real name; a cross-org guest's comment
+ * (author outside the viewer's org — memberNames only ever covers the
+ * viewer's own org) or an org whose caller isn't OA (memberNames is empty
+ * for non-OA callers, since GET /orgs/:id/members is OA-or-PSA only) still
+ * falls back to a short id fragment — an accepted, documented gap, not
  * silently smoothed over.
  */
-function authorLabel(authorId, currentUserId) {
+function authorLabel(authorId, currentUserId, memberNames) {
   if (authorId === currentUserId) return 'You';
+  const name = memberNames?.[authorId]?.name;
+  if (name) return name;
   return `Member ${authorId.slice(0, 8)}`;
 }
 
-export default function CommentThread({ ticketId, canComment }) {
+export default function CommentThread({ ticketId, canComment, memberNames }) {
   const { apiFetch, userId } = useAuth();
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -63,7 +66,7 @@ export default function CommentThread({ ticketId, canComment }) {
         {comments.map((c) => (
           <li key={c.id} className="rounded-sm border border-hairline-cool bg-canvas-soft p-3">
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-xs font-medium text-ink">{authorLabel(c.authorId, userId)}</span>
+              <span className="text-xs font-medium text-ink">{authorLabel(c.authorId, userId, memberNames)}</span>
               <span className="text-xs text-ink-faint">{new Date(c.createdAt).toLocaleString()}</span>
             </div>
             <p className="whitespace-pre-wrap text-sm text-ink-secondary">{c.body}</p>

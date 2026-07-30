@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuth, TicketCard, Button, RoleGate, Select, Input, Textarea, Label, Card } from '@froncort/ui';
+import { useAuth, useOrgMembers, TicketCard, Button, RoleGate, Select, Input, Textarea, Label, Card } from '@froncort/ui';
 
 const STATUS_VALUES = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
 const PRIORITY_VALUES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
 
 export default function TicketListPage() {
   const { apiFetch, activeOrgId, orgRole } = useAuth();
+  const { members } = useOrgMembers();
   const router = useRouter();
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -110,12 +111,26 @@ export default function TicketListPage() {
               </Select>
             </div>
             <div>
-              <Label>Assign to (member user ID, optional)</Label>
-              <Input
-                value={createForm.assignedTo}
-                onChange={(e) => setCreateForm((f) => ({ ...f, assignedTo: e.target.value }))}
-                placeholder="UUID of an existing org member"
-              />
+              <Label>Assign to (optional)</Label>
+              {members.length > 0 ? (
+                <Select
+                  value={createForm.assignedTo}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, assignedTo: e.target.value }))}
+                >
+                  <option value="">Unassigned</option>
+                  {members.map((m) => (
+                    <option key={m.userId} value={m.userId}>
+                      {m.name} ({m.role})
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <Input
+                  value={createForm.assignedTo}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, assignedTo: e.target.value }))}
+                  placeholder="UUID of an existing org member"
+                />
+              )}
             </div>
             {createError && <p className="text-sm text-red-600 sm:col-span-2">{createError}</p>}
             <div className="sm:col-span-2">

@@ -23,6 +23,33 @@ async function getOrg(orgId, caller) {
 }
 
 /**
+ * GET /orgs/:id/members — "OA (own org) or PSA", same gate as the other
+ * member-management routes. Added after Phase 7 specifically so the
+ * frontend can resolve userId -> name for same-org users (comments,
+ * attachments, ticket assignment) instead of showing raw UUIDs, and build a
+ * real assignee/reviewer picker instead of a free-text UUID field. Returns
+ * `{userId, email, name, role}` per member — deliberately not the full User
+ * row (no passwordHash, no isPlatformAdmin), since this is member-facing
+ * data exposed to any OA of the org, not an admin-only internal endpoint.
+ */
+async function listMembers(orgId, caller) {
+  assertOrgAdminOrPSA(caller, orgId);
+
+  const memberships = await prisma.orgMembership.findMany({
+    where: { orgId },
+    include: { user: { select: { id: true, email: true, name: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  return memberships.map((m) => ({
+    userId: m.user.id,
+    email: m.user.email,
+    name: m.user.name,
+    role: m.role,
+  }));
+}
+
+/**
  * Adds an existing user to an org. There is no invite/email flow in this
  * build (out of Phase 2 scope) — the target email must already belong to a
  * registered User, otherwise this 404s. See docs/project-progress.md Phase 2
@@ -118,4 +145,4 @@ async function getOrgMembers(orgId) {
   });
 }
 
-module.exports = { getOrg, addMember, updateMemberRole, removeMember, getUserOrgRole, getOrgMembers };
+module.exports = { getOrg, listMembers, addMember, updateMemberRole, removeMember, getUserOrgRole, getOrgMembers };

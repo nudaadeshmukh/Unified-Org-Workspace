@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   useAuth,
+  useOrgMembers,
   Card,
   Button,
   RoleGate,
@@ -22,6 +23,7 @@ export default function TicketDetailPage() {
   const { id } = useParams();
   const router = useRouter();
   const { apiFetch, activeOrgId, orgRole, userId } = useAuth();
+  const { members, byId: memberNames } = useOrgMembers();
 
   const [ticket, setTicket] = useState(null);
   const [notFound, setNotFound] = useState(false);
@@ -166,20 +168,37 @@ export default function TicketDetailPage() {
               isOwner={isOwner}
               fallback={
                 <p className="text-sm text-ink-mute">
-                  {ticket.assignedTo ? `Member ${ticket.assignedTo.slice(0, 8)}` : 'Unassigned'}
+                  {ticket.assignedTo
+                    ? memberNames[ticket.assignedTo]?.name || `Member ${ticket.assignedTo.slice(0, 8)}`
+                    : 'Unassigned'}
                 </p>
               }
             >
-              <Input
-                defaultValue={ticket.assignedTo || ''}
-                placeholder="Member user ID"
-                disabled={savingField === 'assignedTo'}
-                onBlur={(e) => {
-                  if (e.target.value !== (ticket.assignedTo || '')) {
-                    updateField('assignedTo', e.target.value || null);
-                  }
-                }}
-              />
+              {members.length > 0 ? (
+                <Select
+                  value={ticket.assignedTo || ''}
+                  disabled={savingField === 'assignedTo'}
+                  onChange={(e) => updateField('assignedTo', e.target.value || null)}
+                >
+                  <option value="">Unassigned</option>
+                  {members.map((m) => (
+                    <option key={m.userId} value={m.userId}>
+                      {m.name} ({m.role})
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <Input
+                  defaultValue={ticket.assignedTo || ''}
+                  placeholder="Member user ID"
+                  disabled={savingField === 'assignedTo'}
+                  onBlur={(e) => {
+                    if (e.target.value !== (ticket.assignedTo || '')) {
+                      updateField('assignedTo', e.target.value || null);
+                    }
+                  }}
+                />
+              )}
             </RoleGate>
           </div>
         </div>
@@ -221,7 +240,7 @@ export default function TicketDetailPage() {
       </Card>
 
       <Card className="p-6">
-        <CommentThread ticketId={id} canComment />
+        <CommentThread ticketId={id} canComment memberNames={memberNames} />
       </Card>
     </div>
   );
