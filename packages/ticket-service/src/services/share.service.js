@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { orgScope, identityClient } = require('@froncort/shared');
 const prisma = require('../lib/prisma');
 const { AppError } = require('../lib/errors');
@@ -46,20 +47,20 @@ async function createShare(ticketId, caller, { partnerOrgId }) {
     throw new AppError('This ticket is already shared with that organization', 409, 'SHARE_ALREADY_ACTIVE');
   }
 
-  const share = await prisma.ticketShare.create({
-    data: { ticketId, partnerOrgId, sharedBy: caller.id },
-  });
+  const shareId = crypto.randomUUID();
 
   await logAudit({
     orgId: caller.activeOrgId,
     actorId: caller.id,
     action: 'TICKET_SHARED',
     entityType: 'TicketShare',
-    entityId: share.id,
+    entityId: shareId,
     metadata: { ticketId, partnerOrgId },
   });
 
-  return share;
+  return prisma.ticketShare.create({
+    data: { id: shareId, ticketId, partnerOrgId, sharedBy: caller.id },
+  });
 }
 
 async function listShares(ticketId, caller) {
@@ -81,11 +82,6 @@ async function revokeShare(ticketId, shareId, caller) {
     throw new AppError('This share has already been revoked', 400, 'INVALID_TRANSITION');
   }
 
-  const updated = await prisma.ticketShare.update({
-    where: { id: shareId },
-    data: { revokedAt: new Date() },
-  });
-
   await logAudit({
     orgId: caller.activeOrgId,
     actorId: caller.id,
@@ -95,7 +91,10 @@ async function revokeShare(ticketId, shareId, caller) {
     metadata: { ticketId, partnerOrgId: share.partnerOrgId },
   });
 
-  return updated;
+  return prisma.ticketShare.update({
+    where: { id: shareId },
+    data: { revokedAt: new Date() },
+  });
 }
 
 module.exports = { createShare, listShares, revokeShare };

@@ -12,10 +12,14 @@
   "scripts": {
     "dev": "concurrently -n identity,ticket,pr,audit,support-hub,review-console -c blue,green,yellow,magenta,cyan,red \"npm run dev -w packages/identity-service\" \"npm run dev -w packages/ticket-service\" \"npm run dev -w packages/pr-service\" \"npm run dev -w packages/audit-service\" \"npm run dev -w frontend/apps/support-hub\" \"npm run dev -w frontend/apps/review-console\"",
     "prisma:generate": "npm run prisma:generate -w packages/identity-service && npm run prisma:generate -w packages/ticket-service && npm run prisma:generate -w packages/pr-service && npm run prisma:generate -w packages/audit-service",
-    "prisma:migrate": "npm run prisma:migrate -w packages/identity-service && npm run prisma:migrate -w packages/ticket-service && npm run prisma:migrate -w packages/pr-service && npm run prisma:migrate -w packages/audit-service"
+    "prisma:migrate": "npm run prisma:migrate -w packages/identity-service && npm run prisma:migrate -w packages/ticket-service && npm run prisma:migrate -w packages/pr-service && npm run prisma:migrate -w packages/audit-service",
+    "test:setup": "node scripts/setup-test-db.js",
+    "test": "jest --runInBand"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
   },
   "overrides": {
     "sharp": "^0.35.0"

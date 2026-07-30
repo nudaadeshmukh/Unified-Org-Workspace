@@ -5,16 +5,18 @@ const cors = require('cors');
 const morgan = require('morgan');
 const multer = require('multer');
 const { ZodError } = require('zod');
+const { auditClient, buildCorsOptions } = require('@froncort/shared');
 
 const { AppError } = require('./lib/errors');
 const { UPLOAD_DIR } = require('./lib/upload');
 const ticketsRoutes = require('./routes/tickets.routes');
 const orgsRoutes = require('./routes/orgs.routes');
+const internalRoutes = require('./routes/internal.routes');
 
 const app = express();
 
 app.use(helmet());
-app.use(cors()); // TODO Phase 6: lock to CORS_ALLOWED_ORIGINS allowlist
+app.use(cors(buildCorsOptions())); // Locked to CORS_ALLOWED_ORIGINS at Phase 6
 app.use(morgan('dev'));
 app.use(express.json());
 
@@ -29,6 +31,7 @@ app.get('/health', (req, res) => {
 
 app.use('/tickets', ticketsRoutes);
 app.use('/orgs', orgsRoutes);
+app.use('/internal', internalRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: { message: 'Not found', code: 'NOT_FOUND' } });
@@ -44,6 +47,9 @@ app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(400).json({ error: { message: err.message, code: 'VALIDATION_ERROR' } });
   }
+  if (err instanceof auditClient.AuditLogError) {
+    return res.status(err.statusCode).json({ error: { message: err.message, code: err.code } });
+  }
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({ error: { message: err.message, code: err.code } });
   }
@@ -57,6 +63,13 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.TICKETS_PORT || 4002;
-app.listen(PORT, () => {
-  console.log(`ticket-service listening on port ${PORT}`);
-});
+
+// Guarded so `require`-ing this file (e.g. from tests/) never auto-starts a
+// real listener — only the actual `node src/server.js` entry point does.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`ticket-service listening on port ${PORT}`);
+  });
+}
+
+module.exports = app;

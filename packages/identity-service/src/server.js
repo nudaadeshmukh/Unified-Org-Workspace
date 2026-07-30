@@ -6,6 +6,7 @@ const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const { ZodError } = require('zod');
 
+const { auditClient, buildCorsOptions } = require('@froncort/shared');
 const { connectRedis } = require('./lib/redis');
 const { AppError } = require('./lib/errors');
 const { router: authRoutes } = require('./routes/auth.routes');
@@ -16,7 +17,7 @@ const internalRoutes = require('./routes/internal.routes');
 const app = express();
 
 app.use(helmet());
-app.use(cors()); // TODO Phase 6: lock to CORS_ALLOWED_ORIGINS allowlist
+app.use(cors(buildCorsOptions())); // Locked to CORS_ALLOWED_ORIGINS at Phase 6
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
@@ -41,6 +42,9 @@ app.use((err, req, res, next) => {
       error: { message: err.errors[0]?.message || 'Invalid request body', code: 'VALIDATION_ERROR' },
     });
   }
+  if (err instanceof auditClient.AuditLogError) {
+    return res.status(err.statusCode).json({ error: { message: err.message, code: err.code } });
+  }
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({ error: { message: err.message, code: err.code } });
   }
@@ -57,13 +61,20 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.IDENTITY_PORT || 4001;
 
-connectRedis()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`identity-service listening on port ${PORT}`);
+// Guarded so `require`-ing this file (e.g. from tests/, which needs the
+// `app` instance without binding the fixed port) never auto-starts a real
+// listener. Only the actual `node src/server.js` entry point does.
+if (require.main === module) {
+  connectRedis()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`identity-service listening on port ${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error('identity-service failed to connect to Redis:', err.message);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error('identity-service failed to connect to Redis:', err.message);
-    process.exit(1);
-  });
+}
+
+module.exports = app;

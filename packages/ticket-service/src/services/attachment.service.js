@@ -13,9 +13,13 @@ const { resolveTicketAccess, logAudit, TICKET_NOT_FOUND } = require('./ticket.se
  * ORG_ADMIN/SUPPORT_AGENT must still be rejected, since this is an own-org
  * restriction that no share can satisfy, not just a role restriction.
  *
- * The file only gets written to disk here, after this check passes — see
- * lib/upload.js for why multer uses memoryStorage rather than writing
- * unconditionally as soon as the request arrives.
+ * The file only gets written to disk after BOTH the ownership check and the
+ * blocking audit call pass — writing it any earlier risks the same class of
+ * orphaned-file bug Phase 3 already found and fixed once (there, it was an
+ * authorization failure after the write; here it would be an audit-call
+ * failure after the write). See lib/upload.js for why multer uses
+ * memoryStorage rather than writing unconditionally as soon as the request
+ * arrives.
  */
 async function createAttachment(ticketId, caller, file) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
@@ -25,10 +29,22 @@ async function createAttachment(ticketId, caller, file) {
 
   const safeOriginalName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
   const filename = `${crypto.randomUUID()}-${safeOriginalName}`;
+  const attachmentId = crypto.randomUUID();
+
+  await logAudit({
+    orgId: caller.activeOrgId,
+    actorId: caller.id,
+    action: 'ATTACHMENT_ADDED',
+    entityType: 'Attachment',
+    entityId: attachmentId,
+    metadata: { ticketId, fileName: file.originalname },
+  });
+
   await fs.writeFile(path.join(UPLOAD_DIR, filename), file.buffer);
 
-  const attachment = await prisma.attachment.create({
+  return prisma.attachment.create({
     data: {
+      id: attachmentId,
       ticketId,
       uploadedBy: caller.id,
       fileUrl: `/uploads/${filename}`,
@@ -37,17 +53,6 @@ async function createAttachment(ticketId, caller, file) {
       size: file.size,
     },
   });
-
-  await logAudit({
-    orgId: caller.activeOrgId,
-    actorId: caller.id,
-    action: 'ATTACHMENT_ADDED',
-    entityType: 'Attachment',
-    entityId: attachment.id,
-    metadata: { ticketId, fileName: attachment.fileName },
-  });
-
-  return attachment;
 }
 
 /** GET /tickets/:id/attachments — same access rule as GET /tickets/:id. */

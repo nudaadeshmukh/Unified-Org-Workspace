@@ -1,25 +1,15 @@
+const crypto = require('crypto');
 const { orgScope, identityClient, auditClient } = require('@froncort/shared');
 const prisma = require('../lib/prisma');
 const { AppError } = require('../lib/errors');
 
 const TICKET_NOT_FOUND = () => new AppError('Ticket not found', 404, 'NOT_FOUND');
 
-// TEMPORARY, not the final design — same unresolved question flagged in
-// identity-service's connection.service.js (see docs/project-progress.md
-// Phase 2 patch round 2). Swallows because audit-service doesn't exist
-// until Phase 5; Phase 5 must explicitly decide whether this becomes
-// blocking (mutation fails if the audit write fails) to match CLAUDE.md
-// rule #9's "before returning success" wording, or graceful-degradation is
-// kept everywhere and CLAUDE.md is updated to say so.
+// CLAUDE.md rule #9 is now locked: audit calls block, and happen BEFORE the
+// corresponding database write. Thin pass-through — see identity-service's
+// connection.service.js for the full rationale (same design, same wording).
 async function logAudit(event) {
-  try {
-    await auditClient.log(event);
-  } catch (err) {
-    console.warn(
-      '[ticket-service] audit log call failed (expected until Phase 5 wires audit-service):',
-      err.message
-    );
-  }
+  return auditClient.log(event);
 }
 
 /**
@@ -71,9 +61,46 @@ async function resolveTicketAccess(ticketId, caller) {
   return { ticket, access };
 }
 
+/**
+ * assignedTo (if provided) must actually be a member of the caller's org —
+ * verified against identity-service's GET /internal/users/:userId/org-role
+ * (added in Phase 4 for pr-service's reviewer check, retrofitted here since
+ * this had the identical unvalidated-userId gap: previously any UUID-shaped
+ * string was accepted with no check the user existed, let alone belonged to
+ * this org). Fails closed — an unreachable identity-service reads as "not a
+ * member", never "verified", same contract as checkConnectionApproved.
+ */
+async function assertValidAssignee(assignedTo, orgId) {
+  if (!assignedTo) return;
+  const { role } = await identityClient.getUserOrgRole(assignedTo, orgId);
+  if (!role) {
+    throw new AppError('assignedTo must be an existing member of this organization', 400, 'INVALID_ASSIGNEE');
+  }
+}
+
 async function createTicket(caller, { title, description, priority, assignedTo }) {
-  const ticket = await prisma.ticket.create({
+  await assertValidAssignee(assignedTo, caller.activeOrgId);
+
+  // Generated client-side, before either write — see connection.service.js's
+  // requestConnection for why this is what makes audit-before-mutation
+  // possible without a compensating rollback.
+  const ticketId = crypto.randomUUID();
+
+  await logAudit({
+    orgId: caller.activeOrgId,
+    actorId: caller.id,
+    action: 'TICKET_CREATED',
+    entityType: 'Ticket',
+    entityId: ticketId,
+    // priority defaults to MEDIUM at the DB layer if omitted — mirror that
+    // here since the audit call happens before the row (and its default)
+    // exists.
+    metadata: { title, priority: priority || 'MEDIUM' },
+  });
+
+  return prisma.ticket.create({
     data: {
+      id: ticketId,
       orgId: caller.activeOrgId,
       title,
       description,
@@ -82,17 +109,6 @@ async function createTicket(caller, { title, description, priority, assignedTo }
       createdBy: caller.id,
     },
   });
-
-  await logAudit({
-    orgId: caller.activeOrgId,
-    actorId: caller.id,
-    action: 'TICKET_CREATED',
-    entityType: 'Ticket',
-    entityId: ticket.id,
-    metadata: { title: ticket.title, priority: ticket.priority },
-  });
-
-  return ticket;
 }
 
 /**
@@ -165,7 +181,20 @@ async function updateTicket(ticketId, caller, updates) {
     throw TICKET_NOT_FOUND();
   }
 
-  const updated = await prisma.ticket.update({
+  if (updates.assignedTo) {
+    await assertValidAssignee(updates.assignedTo, ticket.orgId);
+  }
+
+  await logAudit({
+    orgId: caller.activeOrgId,
+    actorId: caller.id,
+    action: 'TICKET_UPDATED',
+    entityType: 'Ticket',
+    entityId: ticket.id,
+    metadata: { changes: updates },
+  });
+
+  return prisma.ticket.update({
     where: { id: ticketId },
     data: {
       status: updates.status ?? undefined,
@@ -173,17 +202,6 @@ async function updateTicket(ticketId, caller, updates) {
       assignedTo: updates.assignedTo === undefined ? undefined : updates.assignedTo,
     },
   });
-
-  await logAudit({
-    orgId: caller.activeOrgId,
-    actorId: caller.id,
-    action: 'TICKET_UPDATED',
-    entityType: 'Ticket',
-    entityId: updated.id,
-    metadata: { changes: updates },
-  });
-
-  return updated;
 }
 
 async function deleteTicket(ticketId, caller) {
@@ -191,15 +209,6 @@ async function deleteTicket(ticketId, caller) {
   if (!ticket || !orgScope.ownsResource(ticket.orgId, caller.activeOrgId)) {
     throw TICKET_NOT_FOUND();
   }
-
-  // Children reference Ticket without ON DELETE CASCADE (default RESTRICT) —
-  // clear them out first so the delete itself doesn't fail.
-  await prisma.$transaction([
-    prisma.comment.deleteMany({ where: { ticketId } }),
-    prisma.attachment.deleteMany({ where: { ticketId } }),
-    prisma.ticketShare.deleteMany({ where: { ticketId } }),
-    prisma.ticket.delete({ where: { id: ticketId } }),
-  ]);
 
   await logAudit({
     orgId: caller.activeOrgId,
@@ -209,6 +218,15 @@ async function deleteTicket(ticketId, caller) {
     entityId: ticketId,
     metadata: { title: ticket.title },
   });
+
+  // Children reference Ticket without ON DELETE CASCADE (default RESTRICT) —
+  // clear them out first so the delete itself doesn't fail.
+  await prisma.$transaction([
+    prisma.comment.deleteMany({ where: { ticketId } }),
+    prisma.attachment.deleteMany({ where: { ticketId } }),
+    prisma.ticketShare.deleteMany({ where: { ticketId } }),
+    prisma.ticket.delete({ where: { id: ticketId } }),
+  ]);
 }
 
 module.exports = {

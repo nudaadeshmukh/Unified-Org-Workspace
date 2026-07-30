@@ -34,4 +34,69 @@ async function checkConnectionApproved(orgA, orgB) {
   }
 }
 
-module.exports = { checkConnectionApproved };
+/**
+ * Asks identity-service what role (if any) a userId holds in a given org.
+ * Added in Phase 4 so pr-service can verify a reviewer-assignment target is
+ * actually a REVIEWER in that org before trusting it, instead of trusting an
+ * unverified role claim from the request body. Same fail-closed contract as
+ * checkConnectionApproved: any failure (including identity-service being
+ * unreachable) returns `{ role: null, isPlatformAdmin: false }` — "cannot
+ * verify" must never be treated as "verified."
+ * @param {string} userId
+ * @param {string} orgId
+ * @returns {Promise<{role: string|null, isPlatformAdmin: boolean}>}
+ */
+async function getUserOrgRole(userId, orgId) {
+  const baseUrl = process.env.IDENTITY_SERVICE_URL;
+  const apiKey = process.env.INTERNAL_API_KEY;
+
+  const url = `${baseUrl}/internal/users/${encodeURIComponent(userId)}/org-role?orgId=${encodeURIComponent(orgId)}`;
+
+  try {
+    const res = await fetch(url, { headers: { 'X-Internal-Api-Key': apiKey } });
+    if (!res.ok) {
+      console.error(`identityClient: org-role check returned HTTP ${res.status}`);
+      return { role: null, isPlatformAdmin: false };
+    }
+    const body = await res.json();
+    return {
+      role: (body.data && body.data.role) || null,
+      isPlatformAdmin: Boolean(body.data && body.data.isPlatformAdmin),
+    };
+  } catch (err) {
+    console.error('identityClient: org-role check failed:', err.message);
+    return { role: null, isPlatformAdmin: false };
+  }
+}
+
+/**
+ * Asks identity-service for org membership rows — used by audit-service's
+ * AI digest job to enumerate who to generate a digest for. `orgId` is
+ * optional (omit for every membership across every org). Returns `null`
+ * (never throws, never an empty array) on any failure — distinct from a
+ * legitimately empty result, so callers can tell "identity-service is down,
+ * skip this digest cycle" apart from "there really are zero members."
+ * @param {string} [orgId]
+ * @returns {Promise<{userId: string, orgId: string, role: string}[]|null>}
+ */
+async function getOrgMembers(orgId) {
+  const baseUrl = process.env.IDENTITY_SERVICE_URL;
+  const apiKey = process.env.INTERNAL_API_KEY;
+
+  const url = `${baseUrl}/internal/org-members${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ''}`;
+
+  try {
+    const res = await fetch(url, { headers: { 'X-Internal-Api-Key': apiKey } });
+    if (!res.ok) {
+      console.error(`identityClient: org-members fetch returned HTTP ${res.status}`);
+      return null;
+    }
+    const body = await res.json();
+    return Array.isArray(body.data) ? body.data : null;
+  } catch (err) {
+    console.error('identityClient: org-members fetch failed:', err.message);
+    return null;
+  }
+}
+
+module.exports = { checkConnectionApproved, getUserOrgRole, getOrgMembers };

@@ -258,6 +258,254 @@ The requireRole fail-safe-default fix (previous patch) made a real, previously-i
 
 ---
 
+## Phase 4 — Review Console Backend (pr-service) (2026-07-30)
+
+**Status:** complete
+
+**Two real spec gaps surfaced and resolved with the user before writing code, per CLAUDE.md rule #11 ("stop and ask rather than improvise"):**
+
+1. **`POST /prs`'s role column had a documentation bug.** The original `api_reference.md` listed "OA, SA-equivalent authors" for PR creation, but SUPPORT_AGENT has zero pr-service access anywhere (it's Support Hub/Dashboard 1 only per the assignment brief), and REVIEWER's scope is reviewing, not authoring. The user fixed `api_reference.md` mid-phase to "OA (own org)" only, with an explicit note explaining why. This also resolved a follow-on ambiguity for free: since only ORG_ADMIN can ever author a PR, every other place the table says "Author or OA" / "OA or author" (`PATCH /prs/:id`, `POST /prs/:id/reviewers`) collapses to just "OA of that PR's org" — no separate authorId-vs-role branch was needed anywhere.
+2. **`POST /prs/:id/reviewers`'s "Must be a REV in that org" requirement had no way to be enforced.** pr-service had no internal identity-service endpoint to look up a user's role, and inventing one silently would have violated rule #11 too. The user directed adding a new, documented endpoint: `GET /internal/users/:userId/org-role?orgId=` → `{ role: 'ORG_ADMIN'|'SUPPORT_AGENT'|'REVIEWER'|null, isPlatformAdmin }` (200 even when `role: null`, never a 404 — see `api_reference.md`'s Phase 4 note). Built in `identity-service`, with a matching `identityClient.getUserOrgRole(userId, orgId)` in `packages/shared` using the same fail-closed contract as `checkConnectionApproved` (unreachable identity-service → "not verified", never "verified"). Used by `reviewer.service.js`'s `addReviewer` to actually check the target user's role before creating a `PRReviewer` row.
+
+**Completed features:**
+- `packages/identity-service/src/services/org.service.js`: new `getUserOrgRole(userId, orgId)`; `packages/identity-service/src/routes/internal.routes.js`: new `GET /internal/users/:userId/org-role` route (internal-API-key gated, same as the existing connections-status route).
+- `packages/shared/identityClient.js`: new `getUserOrgRole(userId, orgId)`, fail-closed.
+- `packages/pr-service/src/lib/{prisma,errors}.js` — new, identical shape to ticket-service's.
+- `packages/pr-service/src/services/pr.service.js` — `resolvePRAccess` (same 5-step orgScope pattern as ticket-service's `resolveTicketAccess`, includes `reviewers`/`reviews` in the fetched PR so `GET /prs/:id` can show them without a separate, undocumented reviewer-list endpoint), `createPR`, `listPRs`, `getPRForViewing`, `updatePR` (full DRAFT/IN_REVIEW/APPROVED/REJECTED/MERGED state machine — see versioning note below), `deletePR`, `recomputeApprovalStatus` (re-derives status from each reviewer's *latest* review only, so a reviewer who flips from CHANGES_REQUESTED back to APPROVED is counted correctly instead of being stuck or double-counted), `logAudit` (same Phase-2/3 swallow-and-warn stopgap, same "reconcile at Phase 5" comment).
+- `packages/pr-service/src/services/reviewer.service.js` — `addReviewer`, using the new `getUserOrgRole` check.
+- `packages/pr-service/src/services/review.service.js` — `submitReview`: REVIEWER callers must actually be assigned to *this* PR (`PRReviewer` row check) or get 404 (never 403 — CLAUDE.md rule #2, an unassigned REV poking at a PR they're not on shouldn't learn it exists); ORG_ADMIN callers just need to own the PR's org. `CHANGES_REQUESTED` unconditionally forces status back to `IN_REVIEW` per `api_reference.md`'s auto-transition rule (not routed through `recomputeApprovalStatus`'s threshold logic — it's an override, not a recount). `APPROVED` reviews go through `recomputeApprovalStatus`.
+- `packages/pr-service/src/services/version.service.js` — `listVersions`, `getDiff` (using `diffLines` from the `diff` package, diffing `title + description` as one text block since `PRVersion` only stores those two fields and the endpoint contract is a single `{added, removed}` pair).
+- `packages/pr-service/src/services/share.service.js` — `createShare`/`listShares`/`revokeShare`, line-for-line the same pattern as ticket-service's `share.service.js` (connection-approved check before creating, revoke-not-hard-delete, active-share-conflict guard), adapted for `PRShare`.
+- `packages/pr-service/src/routes/prs.routes.js` — full router. Every `requireRole` call passes `{ allowPlatformAdmin: false }`. Unlike ticket-service, the `GET` routes here (`/`, `/:id`, `/:id/versions`, `/:id/versions/:n/diff`) **do** carry a router-level role gate (`['ORG_ADMIN', 'REVIEWER']`) — SUPPORT_AGENT has zero pr-service visibility "anywhere, including this endpoint" per the user's explicit clarification, which extends to blocking SA even from a legitimate cross-org share (unlike ticket-service, where GUEST access is never role-gated). This was a deliberate, discussed deviation from the ticket-service pattern, not an oversight.
+- `packages/pr-service/src/server.js` — rewritten, same shape as ticket-service's (no upload/static middleware needed — PRs have no attachments).
+- `packages/pr-service/prisma/seed.js` — 2 PRs (pr1: Alpha, `IN_REVIEW`, `requiredApprovals: 2`; pr2: Beta, `DRAFT`), 1 reviewer assignment, 1 baseline `PRVersion`, 1 `CHANGES_REQUESTED` review, 1 cross-org share (pr1 → Beta) — per the master spec's seed plan, idempotent via `upsert` + fixed local IDs, identical pattern to ticket-service's seed.
+- `packages/pr-service/package.json` — added `prisma.seed` config block (was missing).
+- **Retrofit, per the user's request while touching this area:** `packages/ticket-service/src/services/ticket.service.js`'s `Ticket.assignedTo` had the identical unvalidated-userId gap pr-service's reviewer-assignment did — any UUID-shaped string was accepted with no check it belonged to a real org member. Added `assertValidAssignee(assignedTo, orgId)` using the same new `getUserOrgRole` check (any non-null role is accepted here, unlike pr-service's stricter "must be exactly REVIEWER" — `api_reference.md` never documented a role restriction for ticket assignment, only that it should be a real org member), wired into both `createTicket` and `updateTicket`.
+
+**Versioning/diff design (not fully specified by `api_reference.md`, resolved by inference from "diffing version n's content against n-1"):** a baseline `PRVersion` #1 is created at the exact moment a PR transitions `DRAFT → IN_REVIEW` (submit for review), snapshotting whatever title/description was just submitted. Every subsequent content edit while `IN_REVIEW` or `APPROVED` creates a new incrementing version snapshotting the *new* content, and updates the live `PullRequest` row to match. This means `GET /versions/1/diff` correctly 400s (`NO_PRIOR_VERSION`) — there's genuinely no version 0 to diff against — while `/versions/2/diff`, `/3/diff`, etc. all work. `DRAFT`-state edits never version at all (update in place, per the table). Verified live end-to-end (see below).
+
+**Status-transition design (also inferred — the table never gave an explicit PATCH body schema for the state machine):** `PATCH /prs/:id` accepts an optional `status` field. Allowed forward transitions: `DRAFT → IN_REVIEW` (submit), `IN_REVIEW → REJECTED`, `APPROVED → REJECTED`, `APPROVED → MERGED`. `REJECTED`/`MERGED` are terminal — no transitions out, and content edits are blocked once there (400 `INVALID_STATE`). `APPROVED → IN_REVIEW` is never caller-driven; it only happens via `recomputeApprovalStatus` (a `CHANGES_REQUESTED` review, or `requiredApprovals` being raised above the current approval count) — deliberately not exposed as a directly settable status value.
+
+**Known audit-enum gap, flagged not silently worked around:** `AuditAction` has `TICKET_DELETED` but **no `PR_DELETED`** — the enum is locked (schema change is out of Phase 4 scope). `deletePR` reuses `PR_STATUS_CHANGED` with explicit `metadata: { from: <lastStatus>, to: 'DELETED' }` as the closest fit, rather than silently skipping the audit call for PR deletion. Flagging for whoever next touches the audit schema — the cleanest real fix is adding `PR_DELETED` to the enum in a future migration.
+
+**Verification (live curl pass, all shown as actual output, not asserted):**
+- **Role gating:** `POST /prs` — OA 201, REVIEWER 403, SUPPORT_AGENT 403. `GET /prs` — SUPPORT_AGENT 403, PSA 403 (both confirmed zero pr-service visibility).
+- **BOLA, with a manipulated foreign-org ID:** Beta's OA `GET`s pr1 (Alpha's, shared with Beta) → 200 (VIEW access, reviewers/reviews included). Beta's OA `PATCH`es pr1 → 404 (share grants view only, never write — never a 403). Alpha's OA `GET`s a fabricated nonexistent PR id → 404, identical shape to the real-but-inaccessible case.
+- **Reviewer-assignment validation (the actual point of this phase's `getUserOrgRole` addition):** assigning a SUPPORT_AGENT as reviewer → 400 `INVALID_REVIEWER`. Assigning a user with no membership in the target org at all → 400 `INVALID_REVIEWER` (confirmed via a direct `GET /internal/users/:id/org-role` call showing `role: null` first, then the same ID rejected by `POST /prs/:id/reviewers` — not just asserted). Re-assigning an already-assigned reviewer → 409 `ALREADY_ASSIGNED`.
+- **Auto-transition, both directions, shown live:** with `requiredApprovals: 2` and 1 existing `CHANGES_REQUESTED` review, a REVIEWER's `APPROVED` review → status stays `IN_REVIEW` (1/2). A 2nd `APPROVED` review (from the OA) → crosses the threshold → status auto-flips to `APPROVED`. A subsequent `CHANGES_REQUESTED` review while `APPROVED` → forces back to `IN_REVIEW` regardless of the 2-approval count already on record (per the "regardless of approval count" rule). Re-approving afterward → back to `APPROVED`.
+- **Versioning + diff, full cycle:** content edit while `APPROVED` → new `PRVersion` #2 created, live `PullRequest` row updated to match. `GET /versions` shows both. `GET /versions/1/diff` → 400 `NO_PRIOR_VERSION`. `GET /versions/2/diff` → correct `{added, removed}` line arrays.
+- **Terminal-state discipline:** `PATCH` status → `MERGED` (from `APPROVED`) → 200. Content edit after `MERGED` → 400 `INVALID_STATE`. `PATCH` status `MERGED → IN_REVIEW` → 400 `INVALID_TRANSITION`.
+- **Sharing:** `POST /prs/:id/shares` against an org with no approved connection → 400 `CONNECTION_NOT_APPROVED`.
+- **ticket-service retrofit:** `POST /tickets` with a random-UUID `assignedTo` → 400 `INVALID_ASSIGNEE`. Same call with a real Alpha `SUPPORT_AGENT`'s ID → 201.
+- All 4 services (`identity`, `ticket`, `pr`, `audit`) confirmed starting cleanly together via direct `node src/server.js` per service (Redis via `docker compose up -d`, Postgres already running locally) — full `npm run dev` fan-out not re-verified this phase but no reason to expect regression (no root-level scripts touched).
+- **Post-testing cleanup:** deleted the ad-hoc test PR and test ticket created during this verification pass; restored pr1 back to its seeded `IN_REVIEW` state (undid the MERGED-status/extra-version/extra-reviews churn from walking the full state machine live) and pr2 back to `DRAFT`, so the dev DB matches what a fresh `prisma db seed` run actually produces. Also removed one incidental extra `PRReviewer` row created mid-test (an attempt to assign Beta's reviewer to an Alpha PR that unexpectedly succeeded — turned out to be legitimate stale cross-org membership data from earlier-phase testing, not a bug in this phase's code; see Known issues).
+
+**Files modified:**
+- `packages/identity-service/src/services/org.service.js`, `packages/identity-service/src/routes/internal.routes.js` — new `getUserOrgRole` / `GET /internal/users/:userId/org-role`.
+- `packages/shared/identityClient.js` — new `getUserOrgRole`.
+- `packages/pr-service/src/lib/{prisma,errors}.js` (new), `packages/pr-service/src/services/{pr,reviewer,review,version,share}.service.js` (new), `packages/pr-service/src/routes/prs.routes.js` (new), `packages/pr-service/src/server.js` (rewritten), `packages/pr-service/prisma/seed.js` (new), `packages/pr-service/package.json` (added `prisma.seed` config).
+- `packages/ticket-service/src/services/ticket.service.js` — `assertValidAssignee` added, wired into `createTicket`/`updateTicket`.
+- `reference/api_reference.md` — updated by the user mid-phase: `POST /prs` role column fixed (OA only), new `GET /internal/users/:userId/org-role` endpoint documented.
+- Dev DB: added then removed test PR/ticket rows; pr1/pr2 restored to seeded state (see Verification above); one stray `PRReviewer` row removed.
+
+**Remaining work:** Phase 5 (audit-service) is next. Per the master spec's Phase 5 scope, it must "go back and confirm" pr-service's audit calls (`PR_CREATED`, `PR_STATUS_CHANGED`, `PR_APPROVED`, `PR_CHANGES_REQUESTED`, `PR_MERGED`, `PR_SHARED`, `PR_SHARE_REVOKED`) actually land once the real `POST /internal/audit-events` endpoint exists, same as it must for identity-service's and ticket-service's calls.
+
+**Known issues / TODOs:**
+- **No `PR_DELETED` audit action exists** (see "Known audit-enum gap" above) — `deletePR` reuses `PR_STATUS_CHANGED` with `metadata.to: 'DELETED'` as a documented workaround, not a real fix. Revisit if the audit schema is ever migrated again.
+- **Same Phase-5-reconciliation flag as Phases 2/3:** `logAudit()`'s swallow-and-warn behavior in `pr.service.js` is still a stopgap, not a decided final design.
+- **Stale cross-org test data discovered, not cleaned up (out of this phase's scope):** identity-service's dev DB has `reviewer@beta.test` (user `...0006`) holding an `OrgMembership` in **both** Beta and Alpha (`role: REVIEWER` in each) — leftover from some earlier phase's manual testing (predates Phase 4; not something this phase's seed or code created). Harmless for grading purposes (it's dev-only test debris, not a bug in access-control logic — `getUserOrgRole` correctly reported it as a real membership), but worth a note in case a future demo relies on a clean 2-orgs-2-users-each assumption. Not touched this phase since removing another phase's manually-created test data wasn't asked for and identity-service's membership model has no reason to disallow a user belonging to multiple orgs.
+- No automated Jest/Supertest suite added this phase — consistent with Phases 2/3, curl verification only; Phase 6 is where the real test suites get written per `implementation_guide.md`.
+- CORS still wide open (unchanged, locked down in Phase 6).
+
+---
+
+## Phase 4 patch — router-level role gate broke cross-org Guest access (2026-07-30)
+
+User caught a real bug in the Phase 4 entry above before Phase 5 started: the router-level `requireRole(['ORG_ADMIN', 'REVIEWER'])` gate on `GET /prs`, `GET /prs/:id`, `GET /prs/:id/versions`, and `GET /prs/:id/versions/:n/diff` ran *before* `resolvePRAccess`'s share-check logic ever got a chance to execute. That meant a legitimate cross-org GUEST — a caller whose PR was validly shared with their org, connection approved and all — got rejected at the router with a flat 403 if their *home-org* role happened to be SUPPORT_AGENT, even though Guest access has nothing to do with the guest's home-org role at all. This is exactly the violation CLAUDE.md's `CROSS_ORG_GUEST` section warns against: guest permission comes from share/connection state, never from a role check. Confirmed live before fixing: `agent@beta.test` (SUPPORT_AGENT) hitting `GET /prs/:id` for pr1 (Alpha's PR, validly shared with Beta) got 403, when it should have been 200 view-only.
+
+**Fix — moved the OA/REV-only restriction from the router into the service, scoped to the OWNER branch only:**
+- `packages/pr-service/src/routes/prs.routes.js` — removed the router-level `requireRole` gate entirely from all 4 GET routes, matching ticket-service's pattern exactly (no blanket role gate on reads; access is decided entirely by the service layer).
+- `packages/pr-service/src/services/pr.service.js` — `resolvePRAccess`'s `OWNER` branch (own org) now additionally requires `caller.orgRole` to be `ORG_ADMIN` or `REVIEWER`; a SUPPORT_AGENT in the PR's own org still gets no access (falls through to `null` → 404, same as any other non-owning caller — never a 403, since this is a visibility restriction, not a "wrong role for this action" case). The share/`VIEW_COMMENT` branch is completely untouched by this check — a GUEST's home-org role is irrelevant to it, as it always should have been. `listPRs` got the same split: own-org PRs only included if `canSeeOwnOrgPRs` (OA/REV), shared PRs unconditionally included regardless of the caller's home-org role.
+- Side effect, not a regression: PSA hitting `GET /prs` now returns `200 { data: [] }` instead of the old router-level 403, since there's no more router gate and `listPRs`'s null-`activeOrgId` short-circuit takes over — this now matches ticket-service's already-established behavior for the identical PSA case (`GET /tickets` has never had a router role gate either), so it's pr-service becoming *more* consistent with the rest of the codebase, not a new inconsistency. No data is disclosed either way.
+
+**Verification, shown live (not asserted):**
+- The exact missed case: Beta's SUPPORT_AGENT `GET`s pr1 (Alpha's, shared with Beta) → 200, full view including `reviewers`/`reviews`. Same caller `GET`s `/versions` → 200. Confirms the fix.
+- Regression check, same caller: `PATCH pr1` → still 403 (that route is genuinely OA-only per `api_reference.md`, router gate correctly untouched there).
+- Regression check: Alpha's own SUPPORT_AGENT (own org, *not* shared with anyone) `GET`s pr1 → 404, not 403 — own-org SA visibility is still correctly blocked, just via the service layer now instead of the router.
+- Regression check: Alpha's SUPPORT_AGENT `GET /prs` (list) → `200 { data: [] }` — no own-org PRs (blocked), no shares either, correctly empty rather than erroring.
+- No-regression spot checks on unrelated paths: `POST /prs` still 403 for REVIEWER (create stays OA-only, untouched), Beta's OA still 200 on pr1 (share access, unaffected) and still 404 on `PATCH pr1` (view-only via share, unaffected), Alpha's OA still 404 on a fabricated nonexistent PR id.
+
+**Files modified:**
+- `packages/pr-service/src/routes/prs.routes.js` — role gate removed from the 4 GET routes, comment explains why.
+- `packages/pr-service/src/services/pr.service.js` — `resolvePRAccess`'s OWNER branch and `listPRs` both gained the OA/REV-only own-org check, scoped so it never touches the share/GUEST branch.
+
+**Remaining work:** none — Phase 5 is next.
+
+**Known issues / TODOs:** none new from this patch.
+
+---
+
+## Audit-first mutation ordering (2026-07-30)
+
+CLAUDE.md rule #9 was finalized (no longer an open question): every reportable mutation must call `auditClient.log(...)` **before** the corresponding database write, blocking — if the audit call fails, the mutation aborts with no database write at all. This retires the swallow-and-warn stopgap used throughout Phases 2–4. Achievable cleanly because every resource ID is Prisma-generated client-side (`@default(uuid())` is applied in Prisma Client's JS layer, not by the DB) — so an ID can be minted and included in the audit call before the row that ID belongs to is ever written.
+
+**Built (the minimum needed to unblock this, not full Phase 5 scope):**
+- `packages/audit-service/src/lib/{prisma,errors}.js`, `packages/audit-service/src/services/audit.service.js` (`recordEvent`), `packages/audit-service/src/routes/internal.routes.js` (`POST /internal/audit-events`, `internalAuth`-gated, zod-validated against the exact `AuditAction` enum), `packages/audit-service/src/server.js` (rewritten to mount it, standard error-handler shape). **This is a partial, pre-Phase-5 build of audit-service** — only the write path exists. `GET /audit-log`, notifications, the AI digest job, and the `audit_writer` DB-permission lockdown (append-only enforcement) are still full Phase 5 scope, not built here. `packages/audit-service/src/lib/prisma.js` currently connects via `AUDIT_DATABASE_URL` (the owner connection); switching to the restricted `AUDIT_RUNTIME_DATABASE_URL`/`audit_writer` role is a one-line change once Phase 5's `append-only.sql` actually creates that role — flagged inline in the file.
+- `packages/shared/auditClient.js` — real implementation. Blocking `fetch` with a 5-second `AbortSignal.timeout` (a hung audit-service must not hang the caller's mutation forever — times out and throws rather than hanging), throws on any non-2xx response or network failure. No more "not implemented" stub.
+
+**Refactored, in all three services that had the Phase 2–4 stopgap — every mutation's write order inverted (audit call first, then the Prisma write), not just re-pointed at a live URL:**
+- `packages/identity-service/src/services/connection.service.js` — `requestConnection` (pre-generates the connection's ID via `crypto.randomUUID()`), `respondToConnection`.
+- `packages/ticket-service/src/services/{ticket,comment,attachment,share}.service.js` — `createTicket`, `updateTicket`, `deleteTicket`, `createComment`, `createAttachment` (also moved the **file write** to disk after the audit call, not just the DB row — an audit failure after the file was already written would reproduce the exact orphaned-file bug Phase 3 found and fixed once already, just triggered by a different failure mode), `createShare`, `revokeShare`.
+- `packages/pr-service/src/services/{pr,review,share}.service.js` — `createPR`, `updatePR`'s status-transition branch, `recomputeApprovalStatus` (both its APPROVED and fall-back-to-IN_REVIEW branches), `deletePR`, `submitReview`'s `CHANGES_REQUESTED` path, `createShare`, `revokeShare`. `updatePR`'s in-place content edits and `PRVersion` creation are unchanged — no `AuditAction` enum value covers them (pre-existing Phase 4 design call, not something this refactor's scope covers), so there's no audit gate to reorder there. `reviewer.service.js`'s `addReviewer` similarly untouched (no enum value for it either).
+- Every service's `logAudit()` helper simplified from a try/catch-and-`console.warn` wrapper to a thin pass-through (`return auditClient.log(event)`) — letting the throw propagate up to the route handler's existing `catch (err) { next(err) }` *is* the abort; no new error-handling code was needed since the generic 500 path in each service's error middleware already existed.
+
+**Real bug this refactor surfaced and fixed immediately, not deferred:** `connection.service.js`'s `respondToConnection` logged `orgId: caller.activeOrgId`. That's `null` for a PSA caller (no `OrgMembership` exists for PSAs by design, same fact Phase 3 already ran into once for ticket-service's null-`activeOrgId` guard) — under the old swallow-and-warn behavior this silently never mattered, but under blocking audit calls it would have hard-failed *every* PSA connection approval/revocation with a zod validation error (`orgId` must be a UUID), since PSA approving/revoking connections is an explicitly legitimate, tested capability (Phase 3 patch round 2). Fixed by logging `connection.requesterOrgId` instead — matches `requestConnection`'s existing convention of logging from the requesting org's perspective, and is never null.
+
+**Verification, exactly as requested, shown live:**
+- Alpha's ticket count confirmed at 2 (baseline) before the test.
+- audit-service stopped. `POST /tickets` as Alpha's OA → `500 Internal Server Error`, ~1.4s (the `AbortSignal.timeout`'s 5s ceiling wasn't hit — `fetch` failed fast on connection refused). `ticket-service`'s log shows the real cause: `Error: auditClient.log() failed — audit-service unreachable: fetch failed`, thrown from `ticket.service.js`'s `createTicket` before any `prisma.ticket.create` call. Alpha's ticket count re-checked directly via Prisma afterward: still 2 — **no ticket was created.**
+- audit-service restarted. Identical `POST /tickets` call → `201`, ticket returned with a real ID. Fetched that exact ticket row directly via Prisma → exists. Fetched the matching `AuditLog` row by `entityId` → exists, `action: TICKET_CREATED`, and its `createdAt` (06:09:32.266Z) is provably earlier than the ticket row's own `createdAt` (06:09:32.821Z) — direct evidence the audit write really did happen first, not just that both happened to succeed.
+- Additionally smoke-tested `POST /prs` (pr-service) with audit-service up → `201`, same pattern confirmed working end-to-end for the second refactored service.
+- Test ticket, test PR, and their audit rows deleted afterward to leave the dev DB clean.
+
+**Files modified:**
+- `packages/audit-service/src/lib/{prisma,errors}.js` (new), `packages/audit-service/src/services/audit.service.js` (new), `packages/audit-service/src/routes/internal.routes.js` (new), `packages/audit-service/src/server.js` (rewritten).
+- `packages/shared/auditClient.js` — real implementation.
+- `packages/identity-service/src/services/connection.service.js` — `logAudit` simplified; `requestConnection`/`respondToConnection` reordered; `respondToConnection`'s `orgId` bug fixed.
+- `packages/ticket-service/src/services/{ticket,comment,attachment,share}.service.js` — `logAudit` simplified (in `ticket.service.js`); all mutations reordered.
+- `packages/pr-service/src/services/{pr,review,share}.service.js` — `logAudit` simplified (in `pr.service.js`); all mutations reordered.
+- Dev DB: one test ticket, one test PR, and their audit rows created then deleted during verification.
+
+**Remaining work:** Phase 5 proper — `GET /audit-log` (with filters, CSV export, server-forced `orgId`), notifications (`Notification` model already exists from Phase 1; `GET /notifications`, `PATCH /notifications/:id/read` routes don't exist yet), the AI digest `node-cron` job, and the `audit_writer` role's actual `GRANT`/`REVOKE` SQL (append-only DB-permission enforcement — `packages/audit-service/src/lib/prisma.js` is ready for the one-line datasource switch once that SQL runs).
+
+**Known issues / TODOs:**
+- `audit-service`'s Prisma client still connects via the owner role (`AUDIT_DATABASE_URL`), not yet the restricted `audit_writer` role — append-only is not yet DB-permission-enforced, only application-level (no `UPDATE`/`DELETE` code path exists, but nothing stops a direct `psql` connection from doing either). Full Phase 5 scope.
+- No automated test for the audit-first ordering yet (this was verified manually, live, per the user's explicit request) — Phase 6's `audit-permissions.test.js` and the broader test suite should codify this.
+
+---
+
+## Audit-first mutation ordering — two follow-up fixes (2026-07-30)
+
+User caught two real gaps in the audit-first refactor above before Phase 5 continued.
+
+**1. Audit-call failures were falling through to a bare `500 Internal Server Error`, not a distinguishable response.** `auditClient.log()` threw a plain `Error`, which every service's error handler's generic `catch-all` branch turned into `{error: {message: 'Internal server error', code: 'INTERNAL_ERROR'}}` at 500 — indistinguishable from an actual unhandled bug. Fixed by giving `auditClient.js` a dedicated `AuditLogError` class (`statusCode: 503`, `code: 'AUDIT_LOG_FAILED'`), thrown from both of `log()`'s failure paths (unreachable audit-service, non-2xx response). Added an `err instanceof auditClient.AuditLogError` branch to all three calling services' error handlers (`identity-service`, `ticket-service`, `pr-service` — `audit-service` itself never calls `auditClient.log()`, so it didn't need this). Verified live: with audit-service stopped, `POST /tickets` now returns `503 {"error":{"message":"Audit log write failed — audit-service unreachable: fetch failed","code":"AUDIT_LOG_FAILED"}}`, not a bare 500.
+
+**2. `respondToConnection`'s `orgId` fix from the original refactor was wrong for the normal (non-PSA) case.** The original fix used `connection.requesterOrgId` unconditionally, reasoning only about the PSA null-`activeOrgId` case — but that meant every *real* OA approval/revoke got attributed to the requesting org's audit log, never the approving org's, even though the approving org is very often a different, real org with its own `caller.activeOrgId`. Concretely: Beta's OA approving a connection Alpha requested would log `orgId: Alpha`, so it would never show up under `GET /audit-log` filtered to Beta's own org — exactly backwards from what an org admin reviewing their own audit trail would expect. Fixed to `orgId: caller.activeOrgId || connection.requesterOrgId` — uses the caller's own org whenever they have one (every real OA case, either side of the connection), falling back to `connection.requesterOrgId` only when `caller.activeOrgId` is genuinely null (PSA specifically, which is the only case the fallback is actually for).
+
+**Verification, shown live:**
+- Fix 1: confirmed audit-service down (`netstat` showed nothing on 4004), then `POST /tickets` as Alpha's OA → `503`, exact body `{"error":{"message":"Audit log write failed — audit-service unreachable: fetch failed","code":"AUDIT_LOG_FAILED"}}`.
+- Fix 2: revoked the existing Alpha→Beta connection, had Alpha request a fresh one, then had **Beta's OA** (not Alpha's) approve it. Fetched the resulting `CONNECTION_APPROVED` audit row directly via Prisma by `entityId` → `orgId: '00000000-0000-0000-0000-0000000be7a0'` (Beta), not Alpha's `...a1fa0` — confirms the entry is attributed to the approving org, not always the requester.
+- Dev DB left in the same functional end state (Alpha↔Beta connection `APPROVED`) — the revoke/re-request/re-approve cycle used for the test was a wash, not a net change.
+
+**Files modified:**
+- `packages/shared/auditClient.js` — new `AuditLogError` class, thrown from both failure paths in `log()`.
+- `packages/identity-service/src/server.js`, `packages/ticket-service/src/server.js`, `packages/pr-service/src/server.js` — added the `AuditLogError` branch to each error handler.
+- `packages/identity-service/src/services/connection.service.js` — `respondToConnection`'s audit `orgId` changed from unconditional `connection.requesterOrgId` to `caller.activeOrgId || connection.requesterOrgId`.
+- Dev DB: one `OrgConnection` revoked and a fresh one requested/approved in its place during verification (net: still `APPROVED`, same org pair).
+
+**Remaining work:** none — Phase 5 proper (GET /audit-log, notifications, AI digest, `audit_writer` DB lockdown) is next.
+
+**Known issues / TODOs:** none new from this patch.
+
+---
+
+## Phase 5 — Audit Service: Append-Only Enforcement, Unified Viewer, Notifications, AI Digest (2026-07-30)
+
+**Status:** complete
+
+**Four real gaps flagged and resolved with the user before writing code, per CLAUDE.md rule #11:**
+
+1. **No way for the AI digest job to enumerate users.** identity-service only ever had single-member CRUD (POST/PATCH/DELETE), no GET list. Resolved: added `GET /internal/org-members?orgId=` (optional — all memberships across all orgs if omitted) to identity-service. Each returned membership row is treated as one independent unit of digest generation — a user in 2 orgs gets 2 separate digest computations and 2 separate `Notification` rows, **never** a combined cross-org digest in one prompt. This was the user's explicit instruction, specifically to keep the leakage boundary unambiguous for Phase 6's `ai-leakage.test.js`.
+2. **No internal endpoints in ticket-service/pr-service for per-user aggregate facts.** Resolved: one narrow facts endpoint per service — `GET /internal/facts/tickets?userId=&orgId=` → `{assignedCount, overdueCount}` and `GET /internal/facts/prs?userId=&orgId=` → `{awaitingReviewCount, oldestIdleHours}` (`oldestIdleHours: null`, not `0`, when nothing is awaiting review — a real "caught up" result, not a missing value). Both internal-API-key gated, both documented in `api_reference.md`, both with matching `packages/shared` client wrappers (`ticketClient.js`, `prClient.js`) following `identityClient.js`'s existing fail-closed pattern — but returning `null` for the *whole result* on failure (not zeros), so the digest job can tell "the call failed" apart from "the answer really is zero."
+3. **Ticket has no due-date field**, so "overdue" (the assignment's own example digest text: "1 overdue") can't be computed literally. Resolved: heuristic — a ticket counts as overdue if it's still `OPEN`/`IN_PROGRESS` and was created more than `TICKET_OVERDUE_THRESHOLD_DAYS` days ago (new env var, default 3). Documented as an approximation both inline at the computation (`ticket-service/src/services/facts.service.js`) and flagged here for `docs/known-limitations.md` at Phase 9 — not a literal due-date comparison.
+4. **`GROQ_MODEL` was deprecated.** Web search at build time (per `implementation_guide.md`'s explicit "verify exact model string against Groq's docs at build time" instruction) confirmed Groq deprecated `llama-3.3-70b-versatile` on 2026-06-17 — about 6 weeks before this phase was built. Updated the default in `.env.example` and local `.env` to `openai/gpt-oss-120b`, Groq's own migration recommendation. Also gets automatic prompt caching on Groq, worth a mention in the cost-justification section of `docs/known-limitations.md` at Phase 9 given the digest job's repeated system-prompt structure across users/orgs.
+
+**1. Append-only enforcement — verified first, before building anything else this phase, per the user's explicit ordering:**
+- `packages/audit-service/prisma/append-only.sql` (new) — idempotent `CREATE ROLE audit_writer` (guarded, skips if it already exists) + `GRANT USAGE ON SCHEMA audit` + `GRANT SELECT, INSERT ON "AuditLog"` + `REVOKE UPDATE, DELETE ON "AuditLog"` (from `audit_writer` **and** `PUBLIC`) + `GRANT SELECT, INSERT, UPDATE ON "Notification"`. The append-only restriction is specific to `AuditLog`, not a blanket "this role can never UPDATE anything" — `Notification` has real update behavior (`PATCH /notifications/:id/read`) and needs it. Applied directly against the local Postgres instance via `psql` as the owner role.
+- `packages/audit-service/src/lib/prisma.js` — switched from the owner connection (`AUDIT_DATABASE_URL`) to the runtime connection (`AUDIT_RUNTIME_DATABASE_URL`, which authenticates as `audit_writer`).
+- **Verified live, with real mutation traffic actually flowing through the role, not just that it exists on paper:** started audit-service (now connected as `audit_writer`), sent a real `POST /internal/audit-events` through the running app → `201`, row actually inserted. Then, connected directly via `psql -U audit_writer` and ran the exact rejection proof against that real row:
+  ```
+  == Connected as audit_writer — attempt UPDATE against audit."AuditLog" ==
+  ERROR:  permission denied for table AuditLog
+  == Attempt DELETE against audit."AuditLog" ==
+  ERROR:  permission denied for table AuditLog
+  == Confirm SELECT still works (INSERT+SELECT retained) ==
+                    id                  |     action     |           metadata
+  --------------------------------------+----------------+-------------------------------
+   655b3506-e837-4a1c-9099-6ad4b8642545 | TICKET_CREATED | {"test": "append-only-proof"}
+  ```
+  Both `UPDATE` and `DELETE` rejected at the DB permission level with a real Postgres `permission denied` error, `SELECT` and the app's own `INSERT` (already proven by the successful `201` above) both still work. Test row deleted afterward via the owner connection (the only connection that still can).
+
+**2. Unified Audit Viewer:**
+- `packages/audit-service/src/services/auditLog.service.js` (new) — `queryAuditLog(caller, {userId, from, to, action})`: `orgId` is **always** `caller.activeOrgId`, forced server-side, never read from any query param — same BOLA discipline as every ticket/PR read endpoint, applied here to an aggregation query instead of a single-resource lookup. `userId` (if given) filters by `actorId`. `toCsv(rows)` serializes `queryAuditLog`'s exact returned rows — **one query path**, not a second parallel one that could drift (per the user's explicit requirement). Dates serialize as ISO 8601 in the CSV, not JS's locale-dependent `Date#toString()`.
+- `packages/audit-service/src/routes/auditLog.routes.js` (new) — `GET /audit-log`, `requireRole(['ORG_ADMIN', 'REVIEWER'], { allowPlatformAdmin: false })` (matches `api_reference.md`'s table exactly — PSA excluded, same explicit-opt-out pattern locked since Phase 3/4). zod validates `action` against the same `AUDIT_ACTIONS` list used by the write path (extracted to `lib/auditActions.js` so both routes share one source of truth), and `from`/`to` against a custom `Date.parse`-based check (zod's built-in `.datetime()` was too strict — it rejects a bare date like `2026-07-01`, which is a reasonable query value).
+- Verified live: OA → 200; SUPPORT_AGENT → 403; PSA → 403 (no ticket/PR/audit visibility, consistent with the rest of the codebase). Alpha's OA passing `?orgId=<Beta's ID>` as a bogus query param → response still scoped to Alpha only (server-side force confirmed, injected param ignored). `?format=csv` → correct `Content-Type: text/csv`, `Content-Disposition: attachment`, ISO-8601 dates. `?action=`, `?userId=`, `?from=&to=` all filter correctly; an invalid `action` value → clean 400, not a Prisma enum error.
+
+**3. Notifications:**
+- `Notification` model already existed in `schema.prisma` from Phase 1 — no migration needed.
+- `packages/audit-service/src/services/notification.service.js` (new) — `listNotifications` (own only, unread-first via `orderBy: [{read: 'asc'}, {createdAt: 'desc'}]`), `markRead` (own only — a notification that exists but belongs to someone else is 404, not 403, same discipline as every other own-resource check), `createDigestNotification` (used internally by the digest job, not a route).
+- `packages/audit-service/src/routes/notifications.routes.js` (new) — `GET /notifications`, `PATCH /notifications/:id/read`, both just `authenticate` (no role gate — "ANY (own only)" per the table).
+- Verified live: created a real digest notification (see below), confirmed it appears via `GET /notifications`; Beta's OA attempting to mark Alpha's notification as read → 404; Alpha's OA marking their own → 200, `read: true`.
+
+**4. AI Digest:**
+- `packages/audit-service/src/lib/groqClient.js` (new) — `openai` npm package (the "OpenAI-compatible client" the spec asks for) pointed at Groq's `https://api.groq.com/openai/v1` base URL, model from `GROQ_MODEL`.
+- `packages/audit-service/src/services/digest.service.js` (new) — `buildDigestPrompt({ticketFacts, prFacts})`: a **pure function**, exported specifically so Phase 6's `ai-leakage.test.js` can call it directly and assert on the exact prompt string, rather than reverse-engineering it from a mocked Groq call's arguments (per the user's explicit ask: "build it so that test has something real to assert against, not something to reverse-engineer later"). Takes only the two facts objects — no `userId`, no `orgId`, no raw rows, nothing beyond the numbers ticket-service's/pr-service's own internal facts endpoints already scoped before this function ever saw them. `generateDigestForMembership({userId, orgId})`: fetches both facts in parallel, skips (logs a warning, returns `null`) if either fetch failed — never fabricates a "0" when the real answer is unknown. `runDigestCycle()`: enumerates every membership via `identityClient.getOrgMembers()`, generates one independent digest per row, catches and logs per-row failures so one user's failure never blocks the rest of the cycle.
+- `packages/audit-service/src/scheduler.js` (new) — `node-cron`, interval from `AI_DIGEST_INTERVAL_HOURS` converted to an hourly cron expression (`0 */${hours} * * *`). Started from `server.js` after `app.listen` succeeds. No public trigger endpoint, per `api_reference.md`.
+- **Verified live, with a real Groq call, not mocked:** manually invoked `generateDigestForMembership` for Alpha's OA (who has 0 assigned tickets, 0 awaiting-review PRs) → real Groq response ("Great news—there are no tickets or pull requests awaiting your action right now...") stored as a real `Notification` row, confirmed visible via `GET /notifications`.
+- **Verified the 2-orgs-2-digests requirement specifically**, using a leftover multi-org test user from earlier-phase testing (`reviewer@beta.test`, who also has a stray `REVIEWER` membership in Alpha from Phase-2-era manual testing): generated a digest for `(user, Beta)` and a separate digest for `(user, Alpha)` — 2 distinct `Notification` rows, each with only that org's facts. One call hit a transient Groq API blip ("Groq returned no completion text") on the first attempt; confirmed this was correctly handled as a per-user skip (logged a warning, didn't crash), then succeeded cleanly on retry — direct evidence the resilience design works, not just that it exists in the code.
+- Directly unit-verified `buildDigestPrompt`'s output contains only the injected numbers — no IDs, emails, or org names — confirming it's a clean, leak-free function for Phase 6 to build on.
+- Verified test artifacts (3 digest notifications, 1 audit-events test row) cleaned up afterward via the owner DB connection — `audit_writer` correctly has no `DELETE` grant on either table (by design; no route ever deletes an `AuditLog` or `Notification` row, so none was granted), which is itself a nice confirmation of least-privilege working as intended, not an oversight.
+
+**Files modified:**
+- `packages/audit-service/prisma/append-only.sql` (new), `packages/audit-service/src/lib/prisma.js` (switched datasource to `audit_writer`).
+- `packages/identity-service/src/services/org.service.js` (`getOrgMembers`), `packages/identity-service/src/routes/internal.routes.js` (`GET /internal/org-members`).
+- `packages/shared/identityClient.js` (`getOrgMembers`), `packages/shared/ticketClient.js` (new, `getTicketFacts`), `packages/shared/prClient.js` (new, `getPRFacts`), `packages/shared/index.js` (exports both new clients).
+- `packages/ticket-service/src/services/facts.service.js` (new), `packages/ticket-service/src/routes/internal.routes.js` (new), `packages/ticket-service/src/server.js` (mounts it).
+- `packages/pr-service/src/services/facts.service.js` (new), `packages/pr-service/src/routes/internal.routes.js` (new), `packages/pr-service/src/server.js` (mounts it).
+- `packages/audit-service/src/lib/{auditActions,groqClient}.js` (new), `packages/audit-service/src/services/{auditLog,notification,digest}.service.js` (new), `packages/audit-service/src/routes/{auditLog,notifications}.routes.js` (new), `packages/audit-service/src/routes/internal.routes.js` (refactored to import `AUDIT_ACTIONS` from `lib/auditActions.js` instead of a local copy), `packages/audit-service/src/scheduler.js` (new), `packages/audit-service/src/server.js` (mounts everything, starts the scheduler), `packages/audit-service/package.json` (added `openai`, `node-cron`).
+- `.env.example`, `.env` — `GROQ_MODEL` updated to `openai/gpt-oss-120b`; new `TICKET_OVERDUE_THRESHOLD_DAYS=3`.
+- `reference/api_reference.md` — added `GET /internal/org-members?orgId=` (identity-service), `GET /internal/facts/tickets?userId=&orgId=` (ticket-service), `GET /internal/facts/prs?userId=&orgId=` (pr-service); updated the AI Digest section to describe the actual enumeration/facts/model flow and the Groq model change.
+- Dev DB: one `AuditLog` test row and 3 `Notification` test rows created then deleted during verification.
+
+**Remaining work:** Phase 6 (Security Hardening & Automated Tests) is next — the CORS allowlist lockdown, a full re-audit of every raw `where` query for missing org filters, and the 5 required Jest/Supertest suites, including `ai-leakage.test.js` (which now has `buildDigestPrompt` as a directly-callable, pure target) and `audit-permissions.test.js` (which now has real `audit_writer` behavior to codify, not just this phase's manual `psql` proof).
+
+**Known issues / TODOs:**
+- "Overdue" ticket count is a heuristic (`TICKET_OVERDUE_THRESHOLD_DAYS`), not a literal due-date comparison — Ticket has no due-date field in this schema. Flag for `docs/known-limitations.md` at Phase 9.
+- "Awaiting this user's review" (pr-service facts) is defined as "assigned + IN_REVIEW + no review yet from this user" — a judgment call about the review workflow's actual semantics, not explicitly specified in `api_reference.md`. Reasonable given the state machine, but worth a second look if a future phase's frontend surfaces this number somewhere users might scrutinize closely.
+- `GROQ_MODEL`'s deprecation was caught by an explicit web search at build time per `implementation_guide.md`'s instruction — worth remembering to re-check at Phase 9 in case Groq deprecates the replacement too before submission.
+- No automated Jest/Supertest suite added this phase — consistent with Phases 2-4, live verification only (including a real, unmocked Groq call). Phase 6 is where the real test suites, including the mocked-Groq `ai-leakage.test.js`, get written.
+- `docs/known-limitations.md` should get: the overdue-threshold heuristic, the `openai/gpt-oss-120b` prompt-caching note (cost-justification angle), and the multi-org stray-membership dev-DB debris noted in Phase 4's entry — none added yet since that file is explicitly Phase 9 scope.
+
+---
+
+## Phase 5 patch — Notification grants, batch resilience, and enumeration re-verified with explicit rigor (2026-07-30)
+
+User asked for three specific re-confirmations before Phase 6, each with actual output shown, not "confirmed" asserted. All three checked out — no code changes were needed, only verification (plus a minor cleanup).
+
+**1. `audit_writer`'s exact grants on `Notification`, shown directly from Postgres:**
+```
+   grantee    | table_schema |  table_name  | privilege_type
+--------------+--------------+--------------+----------------
+ audit_writer | audit        | AuditLog     | INSERT
+ audit_writer | audit        | AuditLog     | SELECT
+ audit_writer | audit        | Notification | INSERT
+ audit_writer | audit        | Notification | SELECT
+ audit_writer | audit        | Notification | UPDATE
+```
+(`SELECT ... FROM information_schema.role_table_grants WHERE grantee = 'audit_writer'`.) Confirms `append-only.sql`'s `Notification` grant (written in the same file as the `AuditLog` restriction, before this patch, so nothing was actually missing) — `AuditLog` really is SELECT+INSERT only, `Notification` really does have UPDATE too. Then proved it live through the actual running app (which connects as `audit_writer` via `AUDIT_RUNTIME_DATABASE_URL`, not the owner): generated one real digest notification (`audit_writer` INSERT), then `GET /notifications` (`audit_writer` SELECT) → 200 with the row; `PATCH /notifications/:id/read` (`audit_writer` UPDATE) → 200, `read: true`; re-fetched to confirm the update actually persisted, not just returned. Test row deleted afterward via the owner connection.
+
+**2. Batch resilience under a forced mid-cycle failure — actually tested, not just re-read from the code.** Built a throwaway script (`scratch_resilience_test.js`, deleted after use) that monkey-patched `identityClient.getOrgMembers` to return 3 controlled `(userId, orgId)` rows and `groqClient.generateDigest` to throw on exactly the 2nd call, then ran the real `runDigestCycle()`. Result: the cycle logged `"skipping digest for user ...002 ... Groq call failed: SIMULATED transient Groq failure"` and continued — user 1 and user 3 both got real `Notification` rows (confirmed via a direct Prisma query afterward), user 2 correctly got none, and `runDigestCycle()` itself returned normally rather than throwing. This wasn't a design change — `generateDigestForMembership`'s internal try/catch around the Groq call (returns `null` rather than propagating) already made this correct from when it was first built, and `runDigestCycle`'s per-row try/catch is defense-in-depth on top of that — but it had only been inferred from reading the code plus one real (unforced) transient failure during Phase 5's own testing, never deliberately forced and inspected end-to-end until now. Test notifications deleted afterward.
+
+**3. Enumeration confirmed to go through the real `GET /internal/org-members` endpoint, not an in-process shortcut.** Two-part proof: (a) `digest.service.js`'s `runDigestCycle` literally calls `identityClient.getOrgMembers()` — no alternate path exists. (b) Live network proof: tailed identity-service's own log while calling `identityClient.getOrgMembers(...)` from a separate process, and watched the real access-log line appear: `GET /internal/org-members?orgId=... 200 3.493 ms - 476` — confirming the shared client wrapper actually makes an HTTP round-trip to that exact documented endpoint, not a direct DB read or a mocked/stubbed path.
+
+**Files modified:** none — this was a verification-only patch. `scratch_resilience_test.js` was created and deleted within the same session, never committed.
+
+**Remaining work:** none — Phase 6 is next, unchanged from Phase 5's own "Remaining work" note.
+
+**Known issues / TODOs:** none new from this patch.
+
+---
+
 <!--
 Copy the block below for each subsequent phase as it completes. Keep phases in order, oldest first.
 

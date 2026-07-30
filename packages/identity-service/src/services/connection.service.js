@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { auditClient } = require('@froncort/shared');
 const prisma = require('../lib/prisma');
 const { AppError } = require('../lib/errors');
@@ -5,28 +6,15 @@ const { AppError } = require('../lib/errors');
 const NOT_FOUND = () => new AppError('Organization not found', 404, 'NOT_FOUND');
 const CONNECTION_NOT_FOUND = () => new AppError('Connection not found', 404, 'NOT_FOUND');
 
-// TEMPORARY, not the final design — reconcile explicitly in Phase 5, don't
-// just leave this as-is because it happens to work. Swallowing here is a
-// Phase 2 stopgap forced by audit-service not existing yet (auditClient.log()
-// is still a throwing stub); it is NOT the locked behavior. CLAUDE.md rule #9
-// ("calls auditClient.log(...) before returning success to the caller") and
-// the documented ticket/pr-service trade-off both point toward the audit
-// write being synchronous and mutation-blocking once audit-service is real
-// (a down/slow audit-service should fail the mutation, not silently lose the
-// audit trail — this is an audit-integrity-graded assignment). When Phase 5
-// wires the real endpoint, either switch this to blocking (rethrow instead of
-// swallow) to match ticket/pr-service, or — if graceful degradation is
-// deliberately kept — update CLAUDE.md rule #9 to say so explicitly so all
-// three services are consistent instead of silently divergent.
+// CLAUDE.md rule #9 is now locked (resolved, not a stopgap): audit calls
+// block, and happen BEFORE the corresponding database write, not after — no
+// mutation may succeed without a matching audit entry. This is a thin
+// pass-through now (the swallow-and-warn Phase 2-4 behavior is retired); it
+// exists purely so call sites read `logAudit(...)` instead of reaching into
+// `auditClient` directly. Letting the throw propagate IS the abort — callers
+// must call this before their prisma write, not wrap it in try/catch.
 async function logAudit(event) {
-  try {
-    await auditClient.log(event);
-  } catch (err) {
-    console.warn(
-      '[identity-service] audit log call failed (expected until Phase 5 wires audit-service):',
-      err.message
-    );
-  }
+  return auditClient.log(event);
 }
 
 // api_reference.md's connections table lists PSA for all 3 endpoints — the
@@ -84,20 +72,24 @@ async function requestConnection(orgId, caller, { targetOrgId }) {
     );
   }
 
-  const connection = await prisma.orgConnection.create({
-    data: { requesterOrgId: orgId, targetOrgId, status: 'PENDING' },
-  });
+  // ID generated client-side, before either write, so the audit call can
+  // reference the connection's real ID without needing the DB row to exist
+  // yet — this is what makes audit-before-mutation possible (CLAUDE.md rule
+  // #9). If logAudit throws, the create below never runs.
+  const connectionId = crypto.randomUUID();
 
   await logAudit({
     orgId,
     actorId: caller.id,
     action: 'CONNECTION_REQUESTED',
     entityType: 'OrgConnection',
-    entityId: connection.id,
+    entityId: connectionId,
     metadata: { requesterOrgId: orgId, targetOrgId },
   });
 
-  return connection;
+  return prisma.orgConnection.create({
+    data: { id: connectionId, requesterOrgId: orgId, targetOrgId, status: 'PENDING' },
+  });
 }
 
 async function listConnections(orgId, caller) {
@@ -146,18 +138,26 @@ async function respondToConnection(connectionId, caller, { status }) {
     }
   }
 
-  const updated = await prisma.orgConnection.update({ where: { id: connectionId }, data: { status } });
-
+  // orgId should reflect the caller's own org whenever they have one — a
+  // real OA acting on this connection (either the requester's or the
+  // target's admin) wants the entry to show up under THEIR org's audit log,
+  // not always the requester's. Using connection.requesterOrgId
+  // unconditionally (the first pass at this fix) was wrong: it misattributed
+  // every target-org approval/revoke to the requesting org instead, so it'd
+  // never show under the approving org's own audit filter. Fall back to
+  // connection.requesterOrgId only for PSA specifically, whose
+  // caller.activeOrgId is genuinely null (no OrgMembership exists for PSAs
+  // by design) — there is no "caller's own org" to attribute it to.
   await logAudit({
-    orgId: caller.activeOrgId,
+    orgId: caller.activeOrgId || connection.requesterOrgId,
     actorId: caller.id,
     action: status === 'APPROVED' ? 'CONNECTION_APPROVED' : 'CONNECTION_REVOKED',
     entityType: 'OrgConnection',
-    entityId: updated.id,
-    metadata: { requesterOrgId: updated.requesterOrgId, targetOrgId: updated.targetOrgId, status },
+    entityId: connection.id,
+    metadata: { requesterOrgId: connection.requesterOrgId, targetOrgId: connection.targetOrgId, status },
   });
 
-  return updated;
+  return prisma.orgConnection.update({ where: { id: connectionId }, data: { status } });
 }
 
 /**

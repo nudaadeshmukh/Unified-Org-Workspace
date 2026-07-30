@@ -33,14 +33,16 @@ Role shorthand: **OA** = Org Admin, **SA** = Support Agent, **REV** = Reviewer/A
 ### Cross-Org Connections
 | Method | Path | Roles | Notes |
 |---|---|---|---|
-| POST | `/orgs/:id/connections` | OA (own org) | Body: `{targetOrgId}`. Creates status=PENDING. |
-| PATCH | `/connections/:id` | OA of the **target** org (approve) or OA of **either** org (revoke) | Body: `{status: 'APPROVED' \| 'REVOKED'}`. Revoke only valid from APPROVED. Re-approval after revoke requires a brand-new PENDING request. |
+| POST | `/orgs/:id/connections` | OA (own org) or PSA | Body: `{targetOrgId}`. Creates status=PENDING. |
+| PATCH | `/connections/:id` | OA of the **target** org (approve) or OA of **either** org (revoke), or PSA for either action | Body: `{status: 'APPROVED' \| 'REVOKED'}`. Revoke only valid from APPROVED. Re-approval after revoke requires a brand-new PENDING request. |
 | GET | `/orgs/:id/connections` | OA (own org) or PSA | Lists all connections for an org, any status. |
 
 ### Internal (service-to-service only, requires internal API key header)
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/internal/connections/status?orgA=&orgB=` | Used by ticket-service/pr-service before creating a share, to confirm an APPROVED connection exists between two orgs. |
+| GET | `/internal/users/:userId/org-role?orgId=` | **Added in Phase 4.** Returns `{ data: { role: 'ORG_ADMIN' \| 'SUPPORT_AGENT' \| 'REVIEWER' \| null, isPlatformAdmin: boolean } }` — `role: null` means the user is not a member of that org at all (this is a 200 with `role: null`, not a 404 — the caller decides what "not a member" means for its use case). Built so pr-service can verify a `userId` is actually a `REVIEWER` in the target org before creating a `PRReviewer` row — never trust a role claim from the request body. Add a corresponding `packages/shared/identityClient.js` function (`getUserOrgRole(userId, orgId)`) alongside the existing `checkConnectionApproved`, with the same fail-closed behavior: if identity-service is unreachable, treat it as "cannot verify" (reject the action), never as "verified." |
+| GET | `/internal/org-members?orgId=` | **Added in Phase 5.** Returns `{ data: [{ userId, orgId, role }] }` — every `OrgMembership` row for `orgId`, or every membership across every org if `orgId` is omitted. Built so audit-service's AI digest job can enumerate which (user, org) pairs to generate a digest for. Each row is treated as one independent unit of digest generation — a user in 2 orgs gets 2 separate digest computations and 2 separate `Notification` rows, never a combined cross-org digest in one prompt. Add a corresponding `packages/shared/identityClient.js` function (`getOrgMembers(orgId?)`), same fail-closed contract as the other internal-client functions: returns `null` (not an empty array) on any failure, so "identity-service is down" is distinguishable from "there really are zero members." |
 
 ---
 
@@ -75,6 +77,11 @@ Role shorthand: **OA** = Org Admin, **SA** = Support Agent, **REV** = Reviewer/A
 | GET | `/tickets/:id/shares` | OA (of the ticket's own org) | |
 | DELETE | `/tickets/:id/shares/:shareId` | OA (of the ticket's own org) | Sets `revokedAt`, does not hard-delete. |
 
+### Internal (service-to-service only, requires internal API key header)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/internal/facts/tickets?userId=&orgId=` | **Added in Phase 5.** Returns `{ data: { assignedCount, overdueCount } }` — pre-aggregated, already-scoped-to-this-user-and-org facts for audit-service's AI digest job. `assignedCount`/`overdueCount` both only count tickets still `OPEN`/`IN_PROGRESS` (not lifetime totals). `overdueCount` is a heuristic (Ticket has no due-date field in this schema): still-open tickets created more than `TICKET_OVERDUE_THRESHOLD_DAYS` days ago (default 3), not a literal due-date comparison. |
+
 ---
 
 ## pr-service (Phase 4)
@@ -82,7 +89,7 @@ Role shorthand: **OA** = Org Admin, **SA** = Support Agent, **REV** = Reviewer/A
 ### Pull Requests
 | Method | Path | Roles | Notes |
 |---|---|---|---|
-| POST | `/prs` | OA, SA-equivalent authors (own org) | Body: `{title, description, requiredApprovals}`. Status starts `DRAFT`. |
+| POST | `/prs` | OA (own org) | Body: `{title, description, requiredApprovals}`. Status starts `DRAFT`. **Author-only, not Reviewer** — per the assignment's own role definitions, Org Admin has full control including authoring; Reviewer's scope is specifically reviewing/approving, not creating PRs. Support Agent has zero access to pr-service anywhere, including this endpoint — Support Agent is Dashboard 1 only. |
 | GET | `/prs` | OA, REV (own org, + anything shared with caller's org) | |
 | GET | `/prs/:id` | OA, REV (own org) OR GUEST (valid share) | Same BOLA discipline as ticket detail. |
 | PATCH | `/prs/:id` | Author or OA (own org only) | If status is DRAFT: update in place. If IN_REVIEW or later: creates a new PRVersion instead of overwriting. |
@@ -109,6 +116,11 @@ Role shorthand: **OA** = Org Admin, **SA** = Support Agent, **REV** = Reviewer/A
 | GET | `/prs/:id/shares` | OA (of the PR's own org) | |
 | DELETE | `/prs/:id/shares/:shareId` | OA (of the PR's own org) | Soft-revoke, same as tickets. |
 
+### Internal (service-to-service only, requires internal API key header)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/internal/facts/prs?userId=&orgId=` | **Added in Phase 5.** Returns `{ data: { awaitingReviewCount, oldestIdleHours } }` — pre-aggregated, already-scoped-to-this-user-and-org facts for audit-service's AI digest job. "Awaiting this user's review" = PR is `IN_REVIEW`, this user is an assigned `PRReviewer`, and this user hasn't yet submitted any review on it. `oldestIdleHours` is `null` (not `0`) when `awaitingReviewCount` is 0 — a real "nothing outstanding" result, not a missing value. |
+
 ---
 
 ## audit-service (Phase 5)
@@ -132,7 +144,7 @@ Role shorthand: **OA** = Org Admin, **SA** = Support Agent, **REV** = Reviewer/A
 | PATCH | `/notifications/:id/read` | ANY (own only) | |
 
 ### AI Digest
-No public endpoint. Triggered by a `node-cron` schedule inside audit-service. Internally calls ticket-service and pr-service (via internal API key) for pre-scoped facts per user, sends a short structured prompt to Groq (Llama 3.3 70B), stores the result, creates a `Notification` row. See `implementation_guide.md` Phase 5 for the exact prompt-construction rule (facts only, never raw queries, never other-org data).
+No public endpoint. Triggered by a `node-cron` schedule inside audit-service (interval from `AI_DIGEST_INTERVAL_HOURS`). Enumerates `(userId, orgId)` pairs via identity-service's `GET /internal/org-members`; for each one, internally calls ticket-service's `GET /internal/facts/tickets` and pr-service's `GET /internal/facts/prs` for pre-scoped facts, sends a short structured prompt built from ONLY those facts to Groq (model from `GROQ_MODEL` — **updated at Phase 5 build time from `llama-3.3-70b-versatile` to `openai/gpt-oss-120b`, since Groq deprecated the former on 2026-06-17 and recommends the latter as the direct migration target**), stores the result, creates a `Notification` row. A user in 2 orgs gets 2 independent digest computations and 2 separate `Notification` rows — never one combined cross-org digest in a single prompt. See `implementation_guide.md` Phase 5 for the exact prompt-construction rule (facts only, never raw queries, never other-org data).
 
 ---
 

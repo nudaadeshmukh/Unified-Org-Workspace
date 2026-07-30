@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const prisma = require('../lib/prisma');
 const { resolveTicketAccess, logAudit, TICKET_NOT_FOUND } = require('./ticket.service');
 
@@ -13,20 +14,20 @@ async function createComment(ticketId, caller, { body }) {
     throw TICKET_NOT_FOUND();
   }
 
-  const comment = await prisma.comment.create({
-    data: { ticketId, authorId: caller.id, body },
-  });
+  const commentId = crypto.randomUUID();
 
   await logAudit({
     orgId: caller.activeOrgId,
     actorId: caller.id,
     action: 'COMMENT_ADDED',
     entityType: 'Comment',
-    entityId: comment.id,
+    entityId: commentId,
     metadata: { ticketId },
   });
 
-  return comment;
+  return prisma.comment.create({
+    data: { id: commentId, ticketId, authorId: caller.id, body },
+  });
 }
 
 /** GET /tickets/:id/comments — same access rule as GET /tickets/:id. */
