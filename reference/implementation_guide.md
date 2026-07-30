@@ -65,6 +65,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 **Scope (see `api_reference.md` → ticket-service):**
 - Ticket CRUD, comments, attachments. **Locked storage mechanism:** files are saved to a per-service `packages/ticket-service/uploads/` directory (gitignored — add `uploads/` to `.gitignore` in this phase), served via `express.static` at `/uploads/:filename`. `Attachment.fileUrl` stores that relative path (e.g. `/uploads/<uuid>-<originalname>`), not an absolute URL. Known limitation to carry into `docs/known-limitations.md` at Phase 9: Railway's container filesystem is ephemeral, so uploaded files won't survive a redeploy — acceptable for this assignment's timeline, not for real production use.
 - `packages/shared/orgScope.js`: real implementation now — this is the actual BOLA defense, used by every route here.
+- **PSA does not bypass anything in this service.** Every `requireRole(...)` call here must pass `{ allowPlatformAdmin: false }` — see `CLAUDE.md` → Platform Super Admin scope. Do not build a separate/local role-gate implementation for this service; the shared `requireRole()` middleware should take the bypass behavior as an explicit parameter so identity-service and ticket-service both use the one implementation correctly, rather than diverging.
 - Feature flags: `GET /orgs/:orgId/feature-flags` (reads seeded rows).
 - Cross-org ticket sharing: `POST/GET/DELETE /tickets/:id/shares` — must call identity-service's `/internal/connections/status` before creating a share.
 - The 5-step cross-org permission check from the master spec (own org → share exists → not revoked → connection still APPROVED → view+comment only) implemented as one reusable function, unit-testable directly (not just through HTTP).
@@ -83,10 +84,12 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 
 **Scope (see `api_reference.md` → pr-service):**
 - PR CRUD with the DRAFT/IN_REVIEW/APPROVED/REJECTED/MERGED state machine.
-- Reviewer assignment, approval submission, auto-transition logic (N-approvals rule, changes-requested override).
+- Reviewer assignment, approval submission, auto-transition logic (N-approvals rule, changes-requested override). **Reviewer role must be verified server-side, not trusted from the request body** — add `GET /internal/users/:userId/org-role?orgId=` to identity-service (new in this phase, documented in `api_reference.md`) and a matching `getUserOrgRole()` function in `packages/shared/identityClient.js`; `POST /prs/:id/reviewers` must call it and reject if the target user's role isn't `REVIEWER` in that org.
+- **Related gap worth checking while this endpoint exists:** ticket-service's `Ticket.assignedTo` field (Phase 3) was never verified against real org membership — a ticket could be assigned to an arbitrary UUID with no check it's even a user, let alone a member of that org. Not blocking for this phase, but worth a quick retrofit using the same new endpoint once it exists, for consistency. Note it in `docs/project-progress.md` if not fixed now.
 - Versioning: edits after review starts create a new `PRVersion`, not an in-place update. Diff endpoint using the `diff` npm package.
 - Cross-org PR sharing, same pattern and same connection-check requirement as ticket sharing — reuse the shared connection-check function from Phase 3 rather than rewriting it.
 - Same `orgScope`/share-check discipline as ticket-service — same 5-step check, same function shape (consider whether this logic can literally live in `packages/shared` and be reused by both services rather than duplicated in each).
+- **Same PSA rule as Phase 3: `requireRole(...)` calls here must pass `{ allowPlatformAdmin: false }` too.** PSA has no PR visibility anywhere, same as tickets — this was already resolved in Phase 3, reuse that decision rather than re-deriving it.
 - `auditClient.log(...)` on every mutation — same caveat as Phase 3 if audit-service isn't live yet.
 - `pr-service`'s `seed.ts` per the master spec (2 PRs, 1 reviewer, 1 version, 1 changes-requested review, 1 cross-org share).
 
@@ -101,7 +104,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 **Goal:** the append-only audit trail is real (DB-enforced), the unified viewer works across both dashboards' data, and the AI digest job runs on a schedule without ever seeing unscoped data.
 
 **Scope (see `api_reference.md` → audit-service):**
-- `POST /internal/audit-events` — the write path ticket-service and pr-service were already calling (or stubbing) since Phase 3/4, **and identity-service's connection-lifecycle calls (`CONNECTION_REQUESTED`/`APPROVED`/`REVOKED`) added in Phase 2.** **Go back and confirm all three services' calls now actually work end-to-end** — this is exactly the kind of gap earlier phases were told to flag, not hide.
+- `POST /internal/audit-events` — the write path ticket-service and pr-service were already calling (or stubbing) since Phase 3/4, and identity-service's connection-lifecycle calls added in Phase 2. **Go back and confirm all three services' calls now actually work end-to-end** — this is exactly the kind of gap earlier phases were told to flag, not hide. **Also convert every service's `logAudit()` from the Phase 2–4 swallow-and-warn stopgap to the final resolved design (see `CLAUDE.md` rule #9): call audit-service first, using the pre-generated resource ID, and only perform the actual database mutation if that call succeeds.** This is a real refactor across all three services' mutation paths, not just pointing the stub at a real URL — the call order flips (audit before mutate, not after), and a failing audit call must now abort the operation with an error rather than being logged-and-ignored.
 - Append-only enforcement: run the `audit_writer` role SQL (INSERT+SELECT only, UPDATE/DELETE revoked) against the audit schema. audit-service's runtime `.env` connects as `audit_writer`; a separate `.env` var for migrations uses the superuser/owner connection.
 - `GET /audit-log` with all filters (`userId, from, to, action, format=csv`) — `orgId` always forced server-side to caller's own org, never trusted from a query param.
 - Notifications: `Notification` model (add to audit schema's `schema.prisma` now if not already present from Phase 1), `GET /notifications`, `PATCH /notifications/:id/read`.
@@ -182,6 +185,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 - `/docs`: architecture diagram, `erd.mermaid`, `setup-guide.md`, `known-limitations.md` (consolidate every deferred item from every phase above into one place), root `README.md`, and the agentic-tooling note.
 - Record the ~2 minute demo video per the beat sheet in the master spec.
 - Final pass through the assignment checklist (master spec §30) before submitting.
-- Add a closing entry to `docs/project-progress.md` summarizing the project as a whole (not just Phase 9) — this becomes part of what a reviewer or future-you reads first.
+- Add a closing entry to `docs/project-progress.md` summarizing the project as a whole (not just Phase 9)
+ — this becomes part of what a reviewer or future-you reads first.
 
 **Definition of done:** hosted public URL works for both dashboards with printed test credentials for ≥2 orgs; GitHub repo is clean (no committed `.env`, no `node_modules`); `/docs` is complete; demo video recorded; checklist fully reviewed.

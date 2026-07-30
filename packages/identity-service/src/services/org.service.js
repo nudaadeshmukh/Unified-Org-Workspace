@@ -75,4 +75,47 @@ async function removeMember(orgId, targetUserId, caller) {
   await prisma.orgMembership.delete({ where: { id: membership.id } });
 }
 
-module.exports = { getOrg, addMember, updateMemberRole, removeMember };
+/**
+ * GET /internal/users/:userId/org-role?orgId= — added in Phase 4 so
+ * pr-service (and, retrofitted, ticket-service) can verify a userId's actual
+ * role in an org before trusting it (e.g. "must be a REVIEWER in that org"
+ * on reviewer assignment, "must be a real org member" on ticket assignment)
+ * instead of trusting an unverified role claim from the request body. Always
+ * a 200 — `role: null` means "not a member of that org" (or the user doesn't
+ * exist at all), not a 404; the calling service decides what that means for
+ * its own use case. No caller-identity check here beyond the internal API
+ * key (see internalAuth middleware) since this is service-to-service only.
+ */
+async function getUserOrgRole(userId, orgId) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    return { role: null, isPlatformAdmin: false };
+  }
+
+  const membership = await prisma.orgMembership.findUnique({
+    where: { userId_orgId: { userId, orgId } },
+  });
+
+  return { role: membership ? membership.role : null, isPlatformAdmin: user.isPlatformAdmin };
+}
+
+/**
+ * GET /internal/org-members?orgId= — added in Phase 5 so audit-service's AI
+ * digest job can enumerate who to generate a digest for. `orgId` is
+ * optional: with it, returns just that org's memberships; without it,
+ * returns every membership across every org. Deliberately returns raw
+ * membership rows (userId, orgId, role), not full User objects — the digest
+ * job treats each row as one independent unit of digest generation (a user
+ * in 2 orgs gets 2 separate digests, never a combined one), so it never
+ * needs anything beyond this shape. No caller-identity check beyond the
+ * internal API key, same as the other /internal/* routes.
+ */
+async function getOrgMembers(orgId) {
+  return prisma.orgMembership.findMany({
+    where: orgId ? { orgId } : undefined,
+    select: { userId: true, orgId: true, role: true },
+    orderBy: { createdAt: 'asc' },
+  });
+}
+
+module.exports = { getOrg, addMember, updateMemberRole, removeMember, getUserOrgRole, getOrgMembers };
