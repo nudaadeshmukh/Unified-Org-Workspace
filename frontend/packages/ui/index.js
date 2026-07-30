@@ -1,2 +1,14 @@
 export { default as Button } from './Button.jsx';
 export { default as Card } from './Card.jsx';
+export { Input, Select, Textarea, Label } from './Input.jsx';
+export { default as Badge, TicketStatusBadge, TicketPriorityBadge, ConnectionStatusBadge } from './Badge.jsx';
+export { default as RoleGate } from './RoleGate.jsx';
+export { default as AppShell } from './AppShell.jsx';
+export { default as OrgSwitcher } from './OrgSwitcher.jsx';
+export { default as NotificationBell } from './NotificationBell.jsx';
+export { default as CommentThread } from './CommentThread.jsx';
+export { default as TicketCard } from './TicketCard.jsx';
+export { default as PRCard } from './PRCard.jsx';
+export { default as AuditFilterBar } from './AuditFilterBar.jsx';
+export { default as AuditLogTable } from './AuditLogTable.jsx';
+export { AuthProvider, useAuth } from './auth/AuthContext.jsx';
