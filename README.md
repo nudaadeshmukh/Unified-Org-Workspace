@@ -58,7 +58,7 @@ Only tested in Chrome so far — see `docs/known-limitations.md` for the Safari/
 
 Four independently deployable microservices — identity, ticketing, code review, and audit — share one PostgreSQL instance (one schema per service, **no cross-schema foreign keys**: trust flows through verified tokens, not shared database access) and one Redis instance for sessions and rate limiting. Two Next.js frontends share a single login and session across one parent domain.
 
-![Architecture Diagram](./docs/architecture-diagram.svg)
+Architecture Diagram: [`docs/Architecture Diagram.png`](https://github.com/nudaadeshmukh/Unified-Org-Workspace/blob/main/docs/Architecture%20Diagram.png)
 
 ---
 
