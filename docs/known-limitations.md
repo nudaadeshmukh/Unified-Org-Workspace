@@ -1,5 +1,7 @@
 # Known Limitations
 
+Accepted trade-offs and shipped-as-is gaps, each with the reasoning behind not fixing it. For the backlog of things that could still be built or fixed — as opposed to intentionally accepted — see `docs/future_improvements.md`. For getting the project running locally (including seeded demo credentials), see `docs/setup_guide.md`.
+
 ## npm audit — accepted transitive vulnerabilities
 
 As of 2026-07-29, `npm audit` at the repo root reports 8 remaining vulnerabilities
@@ -134,6 +136,10 @@ this deployment). `secure: true` was already unconditional, which
   Chrome-based browsers, and that cross-site third-party-cookie blocking in
   Safari/Firefox is a known, documented trade-off of not having a shared
   parent domain (see `implementation_guide.md`'s Phase 9 decision note).
+  **Status as of this doc update: still not tested** — the real Safari/
+  Firefox result is still an open action item. The actual fix (one shared
+  parent domain via a purchased custom domain) is tracked as an open item
+  in `docs/future_improvements.md`, not repeated here.
 
 ### Uptime pinger — not set up
 
@@ -145,4 +151,12 @@ no traffic. A free uptime pinger (cron-job.org or UptimeRobot) hitting
 ~10 minutes was planned but **not set up** — creating a third-party
 account is outside what an assistant can do on a user's behalf. **Action
 item before the demo/grading window:** sign up for either service and
-add this check manually.
+add this check manually. Also listed in `docs/future_improvements.md`.
+
+## See also
+
+- `docs/future_improvements.md` — backlog of improvements and unimplemented
+  features (org directory endpoint, cross-org name resolution, automated
+  test backfill for Phases 1–5, single-parent-domain deployment fix, etc.).
+- `docs/setup_guide.md` — local setup instructions, including seeded demo
+  users/passwords/roles and organization IDs.
