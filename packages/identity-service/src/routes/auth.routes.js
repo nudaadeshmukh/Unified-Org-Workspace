@@ -10,11 +10,17 @@ const router = express.Router();
 const REFRESH_COOKIE_NAME = 'froncort_refresh_token';
 const REFRESH_TTL_MS = parseInt(process.env.REFRESH_TOKEN_TTL_DAYS || '30', 10) * 24 * 60 * 60 * 1000;
 
+// Local dev: frontend and identity-service are both on localhost, same-site,
+// so 'lax' works. Production (Phase 9, Railway default domains, no shared
+// parent domain): frontend and identity-service are on different registrable
+// domains, making the refresh request genuinely cross-site — 'lax' is never
+// sent on a cross-site fetch/XHR, so login would fail 100% of the time
+// without 'none'. secure:true is already unconditional above, which SameSite=None requires anyway.
 function cookieOptions() {
   return {
     httpOnly: true,
     secure: true,
-    sameSite: 'lax',
+    sameSite: process.env.COOKIE_SAME_SITE || 'lax',
     domain: process.env.COOKIE_DOMAIN || undefined,
     path: '/',
   };

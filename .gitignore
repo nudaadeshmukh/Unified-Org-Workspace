@@ -48,4 +48,8 @@ Thumbs.db
 
 # ----- Misc --------------------------------------------------------------
 .turbo/
+
+# ----- Planning docs (not graded deliverables) -----------------------------
+reference/
+docs/project-progress.md
 .vercel/

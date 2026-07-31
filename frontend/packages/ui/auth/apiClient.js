@@ -14,7 +14,7 @@ export const SERVICE_URLS = {
 
 export class SessionExpiredError extends Error {}
 
-async function rawRequest(service, path, { method = 'GET', body, token, isFormData } = {}) {
+async function rawRequest(service, path, { method = 'GET', body, token, isFormData, responseType } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body && !isFormData) headers['Content-Type'] = 'application/json';
@@ -29,6 +29,14 @@ async function rawRequest(service, path, { method = 'GET', body, token, isFormDa
     credentials: service === 'identity' ? 'include' : 'omit',
     body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
   });
+
+  // The audit-log CSV export (`format=csv`) responds with text/csv, not
+  // JSON — res.json() would throw and silently swallow the actual export.
+  // Every other caller keeps the original JSON-or-null behavior.
+  if (responseType === 'blob') {
+    const blob = res.ok ? await res.blob() : null;
+    return { status: res.status, ok: res.ok, blob };
+  }
 
   let json = null;
   try {

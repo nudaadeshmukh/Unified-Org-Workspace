@@ -45,7 +45,11 @@ app.use((err, req, res, next) => {
   return res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL_ERROR' } });
 });
 
-const PORT = process.env.AUDIT_PORT || 4004;
+// Render (unlike Railway) assigns its own port via $PORT and requires the
+// app to bind to it — AUDIT_PORT stays first for local dev/Railway parity
+// with the other 3 services' locked port table, PORT only wins when the
+// platform actually sets it.
+const PORT = process.env.PORT || process.env.AUDIT_PORT || 4004;
 
 // Guarded so `require`-ing this file (e.g. from tests/) never auto-starts a
 // real listener or a real cron schedule — only the actual
