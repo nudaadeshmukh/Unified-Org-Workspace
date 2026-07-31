@@ -59,7 +59,7 @@ Four independently deployable microservices — identity, ticketing, code review
 | **AI** | Groq API (`openai/gpt-oss-120b`) for scheduled activity-digest generation |
 | **Auth** | JWT (RS256) + Redis-backed rotating refresh tokens |
 | **Tests** | Jest + Supertest — tenant isolation, cross-org sharing, AI data-leakage, auth lifecycle, audit permission enforcement |
-| **Deployment** | Railway — all backend services, Postgres, Redis, and both frontend apps |
+| **Deployment** | Railway (identity/ticket/pr-service, Postgres, Redis) + Render (audit-service) + Vercel (both frontend apps) — see `docs/known-limitations.md` for why audit-service is split out |
 
 ---
 

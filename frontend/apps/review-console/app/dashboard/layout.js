@@ -7,6 +7,9 @@ import { useAuth, AppShell } from '@froncort/ui';
 const NAV_LINKS = [
   { href: '/dashboard', label: 'Pull Requests' },
   { href: '/dashboard/audit', label: 'Audit Log' },
+  ...(process.env.NEXT_PUBLIC_SUPPORT_HUB_URL
+    ? [{ href: process.env.NEXT_PUBLIC_SUPPORT_HUB_URL, label: 'Open Support Hub →' }]
+    : []),
 ];
 
 export default function DashboardLayout({ children }) {
