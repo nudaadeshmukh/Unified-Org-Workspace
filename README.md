@@ -9,7 +9,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](#tech-stack)
 [![Redis](https://img.shields.io/badge/Redis-cache%2Fsessions-DC382D?logo=redis&logoColor=white)](#tech-stack)
 
-🚀 **[Live Demo](#)** &nbsp;·&nbsp; 🎥 **[Video Walkthrough](#)**
+&nbsp; 🎥 **[Video Walkthrough](#)**
 
 </div>
 
@@ -17,14 +17,14 @@
 
 ## Overview
 
-Most multi-tenant platforms treat tenant isolation as an implementation detail — a `WHERE` clause that's easy to get right in code review and easy to get wrong under deadline pressure. A single missing org-scope check on one query is all it takes to leak one customer's data into another's view. This project treats that boundary as the actual product, not an afterthought: every tenant-data query is scoped by the organization ID from a cryptographically verified token — never a value trusted from a URL or request body — and the audit trail is append-only at the database *permission* level, so even a compromised application server can't silently rewrite history.
+Most multi-tenant platforms treat tenant isolation as an implementation detail, a `WHERE` clause that's easy to get right in code review and easy to get wrong under deadline pressure. A single missing org-scope check on one query is all it takes to leak one customer's data into another's view. This project treats that boundary as the actual product, not an afterthought: every tenant-data query is scoped by the organization ID from a cryptographically verified token, never a value trusted from a URL or request body and the audit trail is append-only at the database *permission* level, so even a compromised application server can't silently rewrite history.
 
 The system combines:
 
 - A **Node.js/Express** backend split into four independently deployable microservices, backed by **PostgreSQL** (via Prisma) with one isolated schema per service
 - **JWT (RS256) authentication** with Redis-backed, rotating refresh tokens and reuse detection, shared transparently across two frontends under one session
 - **Five-role RBAC** (Org Admin, Support Agent, Reviewer/Approver, a share-based Cross-Org Guest, and a platform-wide Admin) enforced at both the route and query layer
-- An **AI-generated activity digest** (Groq) built entirely from pre-aggregated, pre-scoped facts — so cross-tenant leakage is structurally prevented, not just policy-forbidden
+- An **AI-generated activity digest** (Groq) built entirely from pre-aggregated, pre-scoped facts, so cross-tenant leakage is structurally prevented, not just policy-forbidden
 
 ---
 
@@ -37,6 +37,20 @@ The system combines:
 - 🔔 **Scheduled AI digests** — a background job summarizes each user's outstanding work on a recurring interval, not computed on page load
 - 🔐 **Full session lifecycle** — org switching without re-login, and a single logout that invalidates the session across both dashboards simultaneously
 - ✅ **Automated security test suite** — dedicated tests proving tenant isolation under a manipulated resource ID, correct cross-org share behavior, AI prompt data-leakage prevention, and database-enforced audit immutability
+
+---
+## Live deployment
+
+| Service | Link |
+|---|---|
+| Support Hub | https://unified-org-workspace-support-hub.vercel.app |
+| Review & Audit Console | https://unified-org-workspace-review-consol.vercel.app |
+| identity-service | https://identity-service-production-6dfc.up.railway.app |
+| ticket-service | https://ticket-service-production-2727.up.railway.app |
+| pr-service | https://pr-service-production.up.railway.app |
+| audit-service | https://unified-org-workspace-audit-service.onrender.com |
+
+Only tested in Chrome so far — see `docs/known-limitations.md` for the Safari/Firefox cross-site-cookie caveat before relying on the hosted URLs in another browser.
 
 ---
 
