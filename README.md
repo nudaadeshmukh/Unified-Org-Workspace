@@ -17,14 +17,14 @@
 
 ## Overview
 
-Most multi-tenant platforms treat tenant isolation as an implementation detail — a `WHERE` clause that's easy to get right in code review and easy to get wrong under deadline pressure. A single missing org-scope check on one query is all it takes to leak one customer's data into another's view. This project treats that boundary as the actual product, not an afterthought: every tenant-data query is scoped by the organization ID from a cryptographically verified token — never a value trusted from a URL or request body — and the audit trail is append-only at the database *permission* level, so even a compromised application server can't silently rewrite history.
+Most multi-tenant platforms treat tenant isolation as an implementation detail, a `WHERE` clause that's easy to get right in code review and easy to get wrong under deadline pressure. A single missing org-scope check on one query is all it takes to leak one customer's data into another's view. This project treats that boundary as the actual product, not an afterthought: every tenant-data query is scoped by the organization ID from a cryptographically verified token — never a value trusted from a URL or request body and the audit trail is append-only at the database *permission* level, so even a compromised application server can't silently rewrite history.
 
 The system combines:
 
 - A **Node.js/Express** backend split into four independently deployable microservices, backed by **PostgreSQL** (via Prisma) with one isolated schema per service
 - **JWT (RS256) authentication** with Redis-backed, rotating refresh tokens and reuse detection, shared transparently across two frontends under one session
 - **Five-role RBAC** (Org Admin, Support Agent, Reviewer/Approver, a share-based Cross-Org Guest, and a platform-wide Admin) enforced at both the route and query layer
-- An **AI-generated activity digest** (Groq) built entirely from pre-aggregated, pre-scoped facts — so cross-tenant leakage is structurally prevented, not just policy-forbidden
+- An **AI-generated activity digest** (Groq) built entirely from pre-aggregated, pre-scoped facts so cross-tenant leakage is structurally prevented, not just policy-forbidden
 
 ---
 
@@ -42,7 +42,7 @@ The system combines:
 
 ## Architecture
 
-Four independently deployable microservices — identity, ticketing, code review, and audit — share one PostgreSQL instance (one schema per service, **no cross-schema foreign keys**: trust flows through verified tokens, not shared database access) and one Redis instance for sessions and rate limiting. Two Next.js frontends share a single login and session across one parent domain.
+Four independently deployable microservices: identity, ticketing, code review, and audit, share one PostgreSQL instance (one schema per service, **no cross-schema foreign keys**: trust flows through verified tokens, not shared database access) and one Redis instance for sessions and rate limiting. Two Next.js frontends share a single login and session across one parent domain.
 
 ![Architecture Diagram](./docs/architecture-diagram.svg)
 
