@@ -692,6 +692,56 @@ Closes both name-resolution gaps flagged at the end of Phase 7, per the user's d
 
 ---
 
+## Phase 9 — Seed Finalization, Deployment, Documentation (2026-07-31)
+
+**Status:** complete — hosted deployment live, cross-browser (Safari/Firefox) verification and uptime-pinger signup are the two items left for the user to finish by hand (see Known issues).
+
+**Decision, made mid-phase, superseding `implementation_guide.md`'s original custom-domain requirement:** deploy on each platform's default assigned domains rather than buying a custom domain, trading full cross-dashboard session sync for actually shipping a hosted URL. Required `SameSite=None` in production (`COOKIE_SAME_SITE` env var, default `lax` unchanged for local dev) plus honest documentation of the resulting third-party-cookie exposure — both done this phase. Full reasoning already captured in `implementation_guide.md`'s Phase 9 section.
+
+**Real blocker hit and worked around: Railway's trial plan caps at 5 provisioned resources account-wide, not per-project.** Discovered by hitting the cap twice — once adding a 4th backend service, once trying to create an entirely separate second Railway project for the overflow. Final hosting split (all real, all live):
+
+| Component | Platform | URL |
+|---|---|---|
+| identity-service | Railway | `https://identity-service-production-6dfc.up.railway.app` |
+| ticket-service | Railway | `https://ticket-service-production-2727.up.railway.app` |
+| pr-service | Railway | `https://pr-service-production.up.railway.app` |
+| Postgres, Redis | Railway | private network only, no public app traffic |
+| audit-service | Render (free tier) | `https://unified-org-workspace-audit-service.onrender.com` |
+| support-hub | Vercel | `https://unified-org-workspace-support-hub.vercel.app` |
+| review-console | Vercel | `https://unified-org-workspace-review-consol.vercel.app` (Vercel truncated the alias to fit its length limit — not a typo) |
+
+audit-service went to Render specifically because it runs a persistent background cron job (`startDigestScheduler`) for the AI digest, ruling out a serverless host, and Railway's cap was already exhausted by the other 5 resources. It reaches Railway's Postgres over the **public proxy connection string** with `sslmode=require` (confirmed via `SHOW ssl` → `on`) since Render can't reach Railway's private `*.railway.internal` network. Full reasoning in `docs/known-limitations.md`'s new Phase 9 section.
+
+**Completed features / actions:**
+- `packages/identity-service/src/routes/auth.routes.js` — `cookieOptions()` reads `COOKIE_SAME_SITE` (default `'lax'`).
+- `packages/audit-service/src/server.js` — listens on `process.env.PORT` first (Render assigns its own port), falling back to `AUDIT_PORT`/4004 for Railway/local parity.
+- `packages/identity-service/package.json`, `ticket-service/package.json`, `pr-service/package.json`, `audit-service/package.json` — each gained `"build": "prisma generate --schema=prisma/schema.prisma"` and `"start": "node src/server.js"` scripts (none existed before; Railway/Render's builders expect these by convention).
+- Production Postgres: all 4 schemas migrated (`prisma migrate deploy`) and seeded (`prisma db seed`) against Railway's Postgres via its public proxy connection string. `audit_writer`'s role password was regenerated for production (`append-only.sql`'s `change-me-in-production` placeholder was never used in production) and applied via `psql` directly — verified the new role can `SELECT`/`INSERT` but cannot `UPDATE`/`DELETE` `AuditLog` (rule #4, unchanged from Phase 5, just re-verified against the real prod DB).
+- `CORS_ALLOWED_ORIGINS` set on all 4 backend services to both real Vercel URLs; `AUDIT_SERVICE_URL` set on identity/ticket/pr-service to the real Render URL; `NEXT_PUBLIC_*_API_URL` set on both Vercel projects to the real Railway/Render URLs — all in that dependency order (had to deploy backends first to learn their URLs before frontends could be configured, then redeploy backends again once the Vercel URLs existed for CORS, matching the guide's anticipated "one deploy to learn the URLs, then a config update + redeploy" sequence).
+- `README.md`'s Tech Stack table's Deployment row updated to reflect the real 3-platform split instead of implying everything is on Railway.
+- `docs/known-limitations.md` — new "Phase 9" section: the full hosting-split rationale, the monorepo CLI-upload caveat (Railway's and Vercel's CLI `up`/`deploy` only upload the single target directory, not the full npm-workspaces monorepo — worked around per-deploy by staging a self-contained copy with the relevant shared package vendored via a `file:` dependency; Render's GitHub-connected deploy didn't need this since it clones the full repo), and the cross-dashboard-session-sync finding below.
+
+**Verification — real, on the live deployed URLs, not localhost:**
+- Support Hub: logged in as `admin@alpha.test`, created a real ticket, refreshed the page — session persisted (no redirect to login).
+- Review Console: loaded **without a separate login** — session was already active from the Support Hub login above (see finding below). Created a real PR, refreshed — session persisted.
+- Unified audit log: both the `TICKET_CREATED` and `PR_CREATED` entries from the actions above rendered correctly with correct metadata; CSV export (`GET /audit-log?format=csv`) verified directly against the live endpoint, returns real CSV rows.
+- Full local Jest suite re-run after all deployment changes: **5/5 suites, 21/21 tests passing** — confirms none of the deployment work (cookie env var, audit-service PORT fallback, new build/start scripts) broke anything locally.
+- **Real finding, contradicting the original planning assumption:** cross-dashboard session sync turned out to be demonstrable on this deployment, without a shared parent domain. The refresh cookie is scoped to identity-service's own domain (not either frontend's), and both frontends call that same identity-service origin for their silent-refresh-on-mount request — so the browser attaches the cookie on either frontend once `SameSite=None` allows it to be sent cross-site at all. Worth restating clearly in the demo video since it's a better result than what was planned around.
+- **Only tested in Chrome.** The agent doing this deployment had Chrome browser automation available but no Safari or Firefox instance. Given both browsers' default third-party-cookie blocking (Safari ITP, Firefox ETP), the `SameSite=None` cookie is likely to behave differently there — possibly login working but refresh/new-tab losing the session. This is a real gap, not an assumption papered over: flagged explicitly in `docs/known-limitations.md` and left as a manual action item.
+
+**Files modified:** see the bullet list above; also `.env.example` (`COOKIE_SAME_SITE` documented), `docs/known-limitations.md`, `README.md`.
+
+**Remaining work (explicitly deferred to the user, not silently skipped):**
+1. **Test the deployed URLs in Safari and/or Firefox** and update `docs/known-limitations.md`'s placeholder with the real observed result before recording the demo video — do not assume the Chrome result generalizes.
+2. **Sign up for a free uptime pinger** (cron-job.org or UptimeRobot) hitting `https://unified-org-workspace-audit-service.onrender.com/health` every ~10 minutes, so Render's free-tier idle spin-down doesn't silently break the audit-first blocking mutation flow or the digest cron job. Not done by the agent — creating a third-party account on the user's behalf is out of scope for what an assistant can do.
+3. Architecture diagram, `erd.mermaid`, `setup-guide.md`, demo video, and the final assignment-checklist pass (master spec §30) are still open — this entry covers deployment + the docs that depend on knowing the real deployed URLs, not the full Phase 9 checklist.
+
+**Known issues / TODOs:**
+- Both Vercel deploys and the 3 Railway CLI deploys required a vendoring workaround (see `docs/known-limitations.md`) rather than a clean monorepo-aware deploy — acceptable for a one-time submission deploy, but if this project is redeployed again later, connecting Railway's and Vercel's dashboards directly to the GitHub repo (like Render already is) and setting each service's Root Directory there would be the cleaner long-term fix, since both platforms' git-connected flows clone the full repo and handle npm workspaces correctly without any vendoring hack.
+- CORS on audit-service was set once (with both real Vercel URLs) at creation time on Render, since its URL was already known when frontend CORS needed it — no extra redeploy round-trip was needed there the way the 3 Railway services needed one.
+
+---
+
 <!--
 Copy the block below for each subsequent phase as it completes. Keep phases in order, oldest first.
 

@@ -8,6 +8,9 @@ const NAV_LINKS = [
   { href: '/dashboard', label: 'Tickets' },
   { href: '/dashboard/connections', label: 'Connections' },
   { href: '/dashboard/flags', label: 'Feature Flags' },
+  ...(process.env.NEXT_PUBLIC_REVIEW_CONSOLE_URL
+    ? [{ href: process.env.NEXT_PUBLIC_REVIEW_CONSOLE_URL, label: 'Open Review Console →' }]
+    : []),
 ];
 
 export default function DashboardLayout({ children }) {
