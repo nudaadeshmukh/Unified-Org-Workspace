@@ -50,7 +50,8 @@ The system combines:
 | pr-service | https://pr-service-production.up.railway.app |
 | audit-service | https://unified-org-workspace-audit-service.onrender.com |
 
-Only tested in Chrome so far — see `docs/known-limitations.md` for the Safari/Firefox cross-site-cookie caveat before relying on the hosted URLs in another browser.
+Only tested in Chrome so far — see [`docs/known-limitations.md`](https://github.com/nudaadeshmukh/Unified-Org-Workspace/blob/main/docs/known-limitations.md)
+ for the Safari/Firefox cross-site-cookie caveat before relying on the hosted URLs in another browser.
 
 ---
 
