@@ -11,5 +11,6 @@ export { default as TicketCard } from './TicketCard.jsx';
 export { default as PRCard } from './PRCard.jsx';
 export { default as AuditFilterBar } from './AuditFilterBar.jsx';
 export { default as AuditLogTable } from './AuditLogTable.jsx';
+export { default as ShareManager } from './ShareManager.jsx';
 export { AuthProvider, useAuth } from './auth/AuthContext.jsx';
 export { useOrgMembers } from './auth/useOrgMembers.js';

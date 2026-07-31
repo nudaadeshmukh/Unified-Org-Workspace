@@ -14,6 +14,7 @@ import {
   Label,
   TicketStatusBadge,
   TicketPriorityBadge,
+  ShareManager,
 } from '@froncort/ui';
 
 const STATUS_VALUES = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
@@ -238,6 +239,12 @@ export default function TicketDetailPage() {
           {uploadError && <p className="mt-2 text-sm text-red-600">{uploadError}</p>}
         </RoleGate>
       </Card>
+
+      <RoleGate allow={['ORG_ADMIN']} role={orgRole} isOwner={isOwner}>
+        <Card className="mb-6 p-6">
+          <ShareManager service="ticket" resourceBasePath={`/tickets/${id}`} />
+        </Card>
+      </RoleGate>
 
       <Card className="p-6">
         <CommentThread ticketId={id} canComment memberNames={memberNames} />

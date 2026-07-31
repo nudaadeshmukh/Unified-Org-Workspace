@@ -656,6 +656,42 @@ Closes both name-resolution gaps flagged at the end of Phase 7, per the user's d
 
 ---
 
+## Phase 8 — Frontend: Review Console (2026-07-31)
+
+**Status:** complete (verified this session — code had been written in an earlier session but never logged; build + full test suite re-run and confirmed passing before writing this entry, per the project's own "log at the end of a phase, after it's confirmed working" rule)
+
+**Completed features:**
+- `frontend/apps/review-console/app/layout.js` — wraps the app in `AuthProvider` (was missing it; PR/audit screens would have had no session at all without this).
+- `frontend/apps/review-console/app/page.js` — real login/register screen, same pattern as Support Hub's Phase 7 screen (redirect-if-authenticated, "Checking session…" state during silent refresh).
+- `frontend/apps/review-console/app/dashboard/layout.js` (new) — auth guard + `AppShell` with "Pull Requests" / "Audit Log" nav.
+- `frontend/apps/review-console/app/dashboard/page.js` — PR list, reusing `PRCard` from the Phase 7 shared library, with a create-PR form (OA-only via `RoleGate`).
+- `frontend/apps/review-console/app/dashboard/prs/[id]/page.js` (new) — PR detail: editable title/description (OA of the PR's own org, blocked once `REJECTED`/`MERGED`), status-transition buttons matching `pr.service.js`'s exact `ALLOWED_TRANSITIONS` (`DRAFT→IN_REVIEW`, `IN_REVIEW→REJECTED`, `APPROVED→{MERGED,REJECTED}`; `APPROVED→IN_REVIEW` deliberately has no button since it's system-driven only, via a `CHANGES_REQUESTED` review), reviewer assignment via a real `<Select>` of the org's `REVIEWER`-role members (`useOrgMembers`, same hook as Support Hub's Phase 7-patch assignee picker — built with the dropdown from day one here rather than starting free-text), review submission (Approve / Request changes) gated to an assigned `REVIEWER` or the owning `ORG_ADMIN` while the PR is `IN_REVIEW`/`APPROVED`, and a version list with lazy-loaded diff view (`GET /prs/:id/versions/:n/diff`, rendered as `-`/`+` lines from the pre-computed diff object — fetched on click, not preloaded for every version).
+- `frontend/apps/review-console/app/dashboard/audit/page.js` (new) — unified audit viewer: `AuditFilterBar` + `AuditLogTable` (both Phase-7 library components, wired to real data for the first time here), gated to `ORG_ADMIN`/`REVIEWER` per `api_reference.md` (org is always the caller's own — no org-picker, matching Support Hub's connections-page pattern), CSV export button that fetches the blob through the authenticated `apiFetch` path (not a plain `<a href>`, since audit-service is Bearer-token-only and a direct navigation would carry no `Authorization` header) and triggers the download via an object URL.
+- `frontend/packages/ui/ShareManager.jsx` (new) — cross-org sharing UI, generic across tickets and PRs (both `share.service.js` implementations expose the identical `{id, partnerOrgId, sharedBy, createdAt, revokedAt}` shape under `POST`/`GET`/`DELETE <resource>/shares`), so one component serves both apps rather than duplicating near-identical markup. Free-text partner-org-ID input (no org directory exists, same documented gap as Phase 7's connections page). Wired into PR detail (`dashboard/prs/[id]/page.js`, OA-only via `RoleGate`) and retrofitted into Support Hub's ticket detail page (`dashboard/tickets/[id]/page.js`) per the phase's explicit instruction to add PR sharing UI and backfill ticket sharing if Phase 7 hadn't already.
+- `frontend/packages/ui/auth/apiClient.js` — `rawRequest` gained a `responseType: 'blob'` option, used only by the CSV export path; every other caller's original JSON-or-null behavior is unchanged.
+- `frontend/apps/review-console/next.config.js` — loads the repo-root `.env` via `dotenv` and re-exposes the 4 `NEXT_PUBLIC_*_API_URL` vars, same pattern as Support Hub's Phase 7 `next.config.js` (Next.js doesn't auto-discover a monorepo-root `.env` from an individual app's directory).
+- `tests/sharing.test.js` — added a full second `describe` block (`sharing.test.js — pull requests`), same fixture pattern as the existing ticket-sharing block (two fresh orgs, a real `APPROVED` connection, a real share), closing a real gap: cross-org PR guest access had only ever been verified manually in Chrome, never pinned by an automated test. One deliberate structural difference from the ticket block: pr-service has no comment primitive (per `api_reference.md`, no `POST/GET .../comments` route on PRs), so a guest's only positive capability asserted is view (`GET /prs/:id`, `GET /prs/:id/versions`); submitting a review is asserted as something that must fail for a plain guest (`api_reference.md` scopes `POST /prs/:id/reviews` to an assigned `REVIEWER` or the owning `OA`, not to guests).
+
+**Verification:**
+- Full Jest suite re-run this session: **5/5 suites, 21/21 tests passing** (up from Phase 7-patch's 18 — the 3 new PR-sharing tests account for the difference), including the new PR-sharing block.
+- `npm run build` re-run this session for both `frontend/apps/review-console` and `frontend/apps/support-hub` — both compile cleanly, typecheck, and generate all routes with no errors (support-hub rebuilt too since Phase 8 touched the shared `frontend/packages/ui` package and `support-hub/app/dashboard/tickets/[id]/page.js` directly — confirmed no regression).
+
+**Files modified:**
+- `frontend/apps/review-console/app/layout.js`, `app/page.js`, `app/dashboard/page.js`, `next.config.js`, `package.json` (added `dotenv`).
+- `frontend/apps/review-console/app/dashboard/layout.js` (new), `app/dashboard/prs/[id]/page.js` (new), `app/dashboard/audit/page.js` (new).
+- `frontend/packages/ui/ShareManager.jsx` (new), `index.js` (exports it), `auth/apiClient.js` (`responseType: 'blob'` support).
+- `frontend/apps/support-hub/app/dashboard/tickets/[id]/page.js` (`ShareManager` wired in).
+- `tests/sharing.test.js` (new PR-sharing `describe` block).
+
+**Remaining work:** Phase 9 (seed finalization, deployment, docs, demo prep) is next.
+
+**Known issues / TODOs:**
+- Same UUID-truncation fallback gaps carried from Phase 7/7-patch apply here too: `ShareManager`'s partner-org list shows only a truncated org-ID (`Org 3a642d1a…`), never a resolved name — no org-directory endpoint exists to resolve one, same documented ceiling as the connections page.
+- PR version diffs are fetched lazily per-version on click, not preloaded — intentional (avoids N diff requests firing for a PR with many versions on first render), not a gap, but worth noting since it means the "Diff loaded" label only appears after a manual click, not automatically.
+- This entry was written retroactively, after the fact of the code being written in an untracked working-tree state — the actual authorship/verification chronology before this session isn't reconstructable from this log the way earlier phases' entries are (those were written contemporaneously). Flagging so this entry isn't mistaken for a live, blow-by-blow account the way Phases 1–7's are.
+
+---
+
 <!--
 Copy the block below for each subsequent phase as it completes. Keep phases in order, oldest first.
 

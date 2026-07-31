@@ -170,7 +170,6 @@ Use your design judgment to make the interface feel fluid, modern, and intuitive
 
 - Short Demo Video (~2 min)
 
-
 PS: You may add the agentic ide/LLM used (if any) for coding with reasoning, pros and cons in the
 
 documentation
