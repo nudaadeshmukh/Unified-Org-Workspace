@@ -162,6 +162,7 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 
 **Scope:**
 - Continue following `reference/frontend_reference.md` — reuse Phase 7's established patterns (spacing, color, component variants) rather than drifting to a new style for the second app.
+- **Use the new `GET /orgs/:id/members` endpoint (added after Phase 7) for the reviewer-assignment picker** — a real dropdown of the org's `REVIEWER`-role members, not a free-text UUID field. Also retrofit Support Hub's `assignedTo` field to use it while you're touching related code, since it was flagged as the same gap in Phase 7.
 - PR list, PR detail (reviewers, approval status/actions, version/diff view rendered from the pre-computed diff object).
 - Unified audit viewer screen: filter bar + table + CSV export button, using the shared component from Phase 7.
 - Notification bell wired to `GET /notifications` / `PATCH /notifications/:id/read`.
@@ -185,7 +186,6 @@ Each phase includes: Goal, Scope, Detailed requirements, Explicit non-goals (del
 - `/docs`: architecture diagram, `erd.mermaid`, `setup-guide.md`, `known-limitations.md` (consolidate every deferred item from every phase above into one place), root `README.md`, and the agentic-tooling note.
 - Record the ~2 minute demo video per the beat sheet in the master spec.
 - Final pass through the assignment checklist (master spec §30) before submitting.
-- Add a closing entry to `docs/project-progress.md` summarizing the project as a whole (not just Phase 9)
- — this becomes part of what a reviewer or future-you reads first.
+- Add a closing entry to `docs/project-progress.md` summarizing the project as a whole (not just Phase 9) — this becomes part of what a reviewer or future-you reads first.
 
 **Definition of done:** hosted public URL works for both dashboards with printed test credentials for ≥2 orgs; GitHub repo is clean (no committed `.env`, no `node_modules`); `/docs` is complete; demo video recorded; checklist fully reviewed.
