@@ -9,7 +9,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](#tech-stack)
 [![Redis](https://img.shields.io/badge/Redis-cache%2Fsessions-DC382D?logo=redis&logoColor=white)](#tech-stack)
 
-&nbsp; 🎥 **[Video Walkthrough](https://drive.google.com/file/d/1HIWZz2TpgPXd_ApZADyKMChsmkHM7jbw/view?usp=sharing)**
+&nbsp; 🎥 **[Video Walkthrough](https://drive.google.com/file/d/1hv6BCSyUC30Yy68UJesG4hQx7bZE19gS/view?usp=sharing)**
 
 </div>
 
